@@ -64,6 +64,27 @@ class BasicDataResponse(BaseModel):
     summary: Dict[str, Any]
     cache_info: Optional[Dict[str, Any]] = None
 
+# Novos modelos para dados diários de métricas
+class DailyMetricsRequest(BaseModel):
+    start_date: str
+    end_date: str
+    table_name: Optional[str] = None
+
+class DailyMetricsRow(BaseModel):
+    Data: str
+    Visualizacao_de_Item: int
+    Adicionar_ao_Carrinho: int
+    Iniciar_Checkout: int
+    Adicionar_Informacao_de_Frete: int
+    Adicionar_Informacao_de_Pagamento: int
+    Pedido: int
+
+class DailyMetricsResponse(BaseModel):
+    data: List[DailyMetricsRow]
+    total_rows: int
+    summary: Dict[str, Any]
+    cache_info: Optional[Dict[str, Any]] = None
+
 def get_project_name(tablename: str) -> str:
     """Determina o nome do projeto baseado na tabela"""
     # Para tabelas específicas, usar projeto diferente
@@ -291,6 +312,176 @@ async def get_basic_data(
         
     except Exception as e:
         print(f"Erro ao buscar dados básicos: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+@metrics_router.post("/daily-metrics", response_model=DailyMetricsResponse)
+async def get_daily_metrics(
+    request: DailyMetricsRequest,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para buscar dados diários de métricas do funil de conversão"""
+    
+    # Se não estiver no cache, buscar do BigQuery
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        # Buscar informações do usuário
+        user_query = f"""
+        SELECT tablename, access_control
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        
+        user_result = client.query(user_query, job_config=job_config)
+        user_data = list(user_result.result())
+        
+        if not user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário não encontrado"
+            )
+        
+        user_tablename = user_data[0].tablename
+        access_control = user_data[0].access_control
+        
+        # Determinar qual tabela usar
+        if user_tablename == 'all':
+            # Usuário tem acesso a todas as tabelas
+            if request.table_name:
+                # Usuário escolheu uma tabela específica
+                tablename = request.table_name
+                print(f"🔓 Usuário com acesso total escolheu tabela: {tablename}")
+            else:
+                # Usar tabela padrão (constance)
+                tablename = 'constance'
+                print(f"🔓 Usuário com acesso total usando tabela padrão: {tablename}")
+        else:
+            # Usuário tem acesso limitado a uma tabela específica
+            if request.table_name and request.table_name != user_tablename:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
+                )
+            tablename = user_tablename
+            print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
+
+        # Determinar projeto
+        project_name = get_project_name(tablename)
+        
+        # Construir condição de data
+        start_date = request.start_date
+        end_date = request.end_date
+        
+        if start_date == end_date:
+            date_condition = f"event_date = '{start_date}'"
+        else:
+            date_condition = f"event_date between '{start_date}' and '{end_date}'"
+        
+        # Query para dados diários de métricas
+        query = f"""
+        SELECT 
+            event_date `Data`,
+            view_item `Visualizacao_de_Item`,
+            add_to_cart `Adicionar_ao_Carrinho`,
+            begin_checkout `Iniciar_Checkout`,
+            add_shipping_info `Adicionar_Informacao_de_Frete`,
+            add_payment_info `Adicionar_Informacao_de_Pagamento`,
+            purchase `Pedido`
+        FROM `{project_name}.dbt_aggregated.{tablename}_daily_metrics`
+        WHERE {date_condition}
+        ORDER BY event_date
+        """
+        
+        print(f"Executando query daily-metrics: {query}")
+        
+        # Executar query
+        result = client.query(query)
+        rows = list(result.result())
+        
+        # Converter para formato de resposta
+        data = []
+        total_view_item = 0
+        total_add_to_cart = 0
+        total_begin_checkout = 0
+        total_add_shipping_info = 0
+        total_add_payment_info = 0
+        total_purchase = 0
+        
+        for row in rows:
+            data_row = DailyMetricsRow(
+                Data=str(row.Data),
+                Visualizacao_de_Item=int(row.Visualizacao_de_Item or 0),
+                Adicionar_ao_Carrinho=int(row.Adicionar_ao_Carrinho or 0),
+                Iniciar_Checkout=int(row.Iniciar_Checkout or 0),
+                Adicionar_Informacao_de_Frete=int(row.Adicionar_Informacao_de_Frete or 0),
+                Adicionar_Informacao_de_Pagamento=int(row.Adicionar_Informacao_de_Pagamento or 0),
+                Pedido=int(row.Pedido or 0)
+            )
+            data.append(data_row)
+            
+            # Calcular totais
+            total_view_item += data_row.Visualizacao_de_Item
+            total_add_to_cart += data_row.Adicionar_ao_Carrinho
+            total_begin_checkout += data_row.Iniciar_Checkout
+            total_add_shipping_info += data_row.Adicionar_Informacao_de_Frete
+            total_add_payment_info += data_row.Adicionar_Informacao_de_Pagamento
+            total_purchase += data_row.Pedido
+        
+        # Calcular taxas de conversão
+        conversion_rates = {}
+        if total_view_item > 0:
+            conversion_rates['view_to_cart'] = (total_add_to_cart / total_view_item) * 100
+            conversion_rates['view_to_checkout'] = (total_begin_checkout / total_view_item) * 100
+            conversion_rates['view_to_purchase'] = (total_purchase / total_view_item) * 100
+        
+        if total_add_to_cart > 0:
+            conversion_rates['cart_to_checkout'] = (total_begin_checkout / total_add_to_cart) * 100
+            conversion_rates['cart_to_purchase'] = (total_purchase / total_add_to_cart) * 100
+        
+        if total_begin_checkout > 0:
+            conversion_rates['checkout_to_purchase'] = (total_purchase / total_begin_checkout) * 100
+        
+        # Criar resumo
+        summary = {
+            "total_view_item": total_view_item,
+            "total_add_to_cart": total_add_to_cart,
+            "total_begin_checkout": total_begin_checkout,
+            "total_add_shipping_info": total_add_shipping_info,
+            "total_add_payment_info": total_add_payment_info,
+            "total_purchase": total_purchase,
+            "conversion_rates": conversion_rates,
+            "periodo": f"{start_date} a {end_date}",
+            "tablename": tablename,
+            "user_access": "all" if user_tablename == 'all' else "limited"
+        }
+        
+        return DailyMetricsResponse(
+            data=data,
+            total_rows=len(data),
+            summary=summary,
+            cache_info={
+                'source': 'database',
+                'cached_at': datetime.now().isoformat(),
+                'ttl_hours': 1
+            }
+        )
+        
+    except Exception as e:
+        print(f"Erro ao buscar dados diários de métricas: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro interno do servidor: {str(e)}"
