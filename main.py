@@ -55,8 +55,9 @@ class Token(BaseModel):
     token_type: str
 
 def hash_password(password: str) -> str:
-    """Hash da senha usando SHA-256"""
-    return hashlib.sha256(password.encode()).hexdigest()
+    """Converte a senha para base64"""
+    import base64
+    return base64.b64encode(password.encode()).decode()
 
 @app.get("/")
 async def root():

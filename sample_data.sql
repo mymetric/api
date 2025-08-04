@@ -11,12 +11,12 @@ CREATE TABLE IF NOT EXISTS `mymetric-hub-shopify.dbt_config.users` (
 );
 
 -- 2. Inserir usuários de exemplo
--- Senhas hashadas com SHA-256 (senha123 = a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3)
+-- Senhas em base64 (senha "123" = MTIz)
 INSERT INTO `mymetric-hub-shopify.dbt_config.users` 
 (email, admin, access_control, tablename, password)
 VALUES 
-('admin@exemplo.com', true, 'full', 'admin_metrics', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3'),
-('usuario@exemplo.com', false, 'read', 'user_metrics', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3');
+('admin@exemplo.com', true, 'full', 'admin_metrics', 'MTIz'),
+('usuario@exemplo.com', false, 'read', 'user_metrics', 'MTIz');
 
 -- 3. Criar tabela de métricas de exemplo para admin
 CREATE TABLE IF NOT EXISTS `mymetric-hub-shopify.admin_metrics` (

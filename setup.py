@@ -77,8 +77,9 @@ def create_sample_user():
     access_control = input("Nível de acesso (read/write/full): ").strip() or "read"
     tablename = input("Nome da tabela de métricas: ").strip() or "user_metrics"
     
-    # Hash da senha
-    hashed_password = hashlib.sha256(password.encode()).hexdigest()
+    # Hash da senha (base64)
+    import base64
+    hashed_password = base64.b64encode(password.encode()).decode()
     
     # Query SQL para inserir usuário
     sql_query = f"""

@@ -109,12 +109,12 @@ A API vem com usuários de exemplo configurados:
 
 #### Administrador
 - **Email**: `admin@exemplo.com`
-- **Senha**: `senha123`
+- **Senha**: `123`
 - **Acesso**: Completo (admin)
 
 #### Usuário Normal
 - **Email**: `usuario@exemplo.com`
-- **Senha**: `senha123`
+- **Senha**: `123`
 - **Acesso**: Leitura
 
 ### Fazer Login
@@ -124,7 +124,7 @@ curl -X POST "http://localhost:8000/login" \
   -H "Content-Type: application/json" \
   -d '{
     "email": "admin@exemplo.com",
-    "password": "senha123"
+    "password": "123"
   }'
 ```
 
@@ -147,7 +147,7 @@ curl -X GET "http://localhost:8000/"
 ```bash
 curl -X POST "http://localhost:8000/login" \
   -H "Content-Type: application/json" \
-  -d '{"email": "admin@exemplo.com", "password": "senha123"}'
+  -d '{"email": "admin@exemplo.com", "password": "123"}'
 ```
 
 ### 3. Perfil do Usuário (com token)
@@ -219,8 +219,8 @@ CREATE TABLE `mymetric-hub-shopify.dbt_config.users` (
 INSERT INTO `mymetric-hub-shopify.dbt_config.users`
 (email, admin, access_control, tablename, password)
 VALUES
-('admin@exemplo.com', true, 'full', 'admin_metrics', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3'),
-('usuario@exemplo.com', false, 'read', 'user_metrics', 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3');
+('admin@exemplo.com', true, 'full', 'admin_metrics', 'MTIz'),
+('usuario@exemplo.com', false, 'read', 'user_metrics', 'MTIz');
 ```
 
 ### Executar SQL de Exemplo
@@ -300,7 +300,7 @@ const loginResponse = await fetch('http://localhost:8000/login', {
   },
   body: JSON.stringify({
     email: 'admin@exemplo.com',
-    password: 'senha123'
+    password: '123'
   })
 });
 
@@ -322,7 +322,7 @@ import requests
 # Login
 login_data = {
     "email": "admin@exemplo.com",
-    "password": "senha123"
+    "password": "123"
 }
 
 response = requests.post("http://localhost:8000/login", json=login_data)
