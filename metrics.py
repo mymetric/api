@@ -852,6 +852,7 @@ async def get_orders(
             print(f"Total de linhas retornadas: {len(rows)}")
             if len(rows) > 0:
                 first_row = rows[0]
+                print(f"Campos disponíveis: {list(first_row.keys())}")
                 print(f"Primeira linha: {dict(first_row)}")
             print(f"=== FIM RESULTADOS ===")
         
@@ -863,8 +864,17 @@ async def get_orders(
         for row in rows:
             try:
                 # Usar getattr com valor padrão para evitar erros
+                horario_value = getattr(row, 'Horario', '')
+                # Converter datetime para string se necessário
+                if hasattr(horario_value, 'isoformat'):
+                    horario_value = horario_value.isoformat()
+                elif horario_value is not None:
+                    horario_value = str(horario_value)
+                else:
+                    horario_value = ''
+                
                 order_row = OrderRow(
-                    Horario=str(getattr(row, 'Horário', '')),
+                    Horario=horario_value,
                     ID_da_Transacao=str(getattr(row, 'ID_da_Transacao', '')),
                     Primeiro_Nome=str(getattr(row, 'Primeiro_Nome', '')),
                     Status=str(getattr(row, 'Status', '')),
@@ -904,6 +914,7 @@ async def get_orders(
                 print(f"Atributos disponíveis: {dir(row)}")
                 if hasattr(row, '__dict__'):
                     print(f"Dict do objeto: {row.__dict__}")
+                print(f"Campos disponíveis na linha: {list(row.keys()) if hasattr(row, 'keys') else 'N/A'}")
                 raise
             data.append(order_row)
             
