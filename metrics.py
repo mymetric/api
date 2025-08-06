@@ -85,6 +85,57 @@ class DailyMetricsResponse(BaseModel):
     summary: Dict[str, Any]
     cache_info: Optional[Dict[str, Any]] = None
 
+# Novos modelos para orders
+class OrdersRequest(BaseModel):
+    start_date: str
+    end_date: str
+    table_name: Optional[str] = None
+    limit: Optional[int] = 1000
+    offset: Optional[int] = 0
+    traffic_category: Optional[str] = None
+    fs_traffic_category: Optional[str] = None
+    fsm_traffic_category: Optional[str] = None
+
+class OrderRow(BaseModel):
+    Horario: str
+    ID_da_Transacao: str
+    Primeiro_Nome: str
+    Status: str
+    Receita: float
+    Canal: str
+    
+    # Campos do último clique
+    Categoria_de_Trafico: str
+    Origem: str
+    Midia: str
+    Campanha: str
+    Conteudo: str
+    Pagina_de_Entrada: str
+    Parametros_de_URL: str
+    
+    # Campos do primeiro clique
+    Categoria_de_Trafico_Primeiro_Clique: str
+    Origem_Primeiro_Clique: str
+    Midia_Primeiro_Clique: str
+    Campanha_Primeiro_Clique: str
+    Conteudo_Primeiro_Clique: str
+    Pagina_de_Entrada_Primeiro_Clique: str
+    Parametros_de_URL_Primeiro_Clique: str
+    
+    # Campos do primeiro lead
+    Categoria_de_Trafico_Primeiro_Lead: str
+    Origem_Primeiro_Lead: str
+    Midia_Primeiro_Lead: str
+    Campanha_Primeiro_Lead: str
+    Conteudo_Primeiro_Lead: str
+    Pagina_de_Entrada_Primeiro_Lead: str
+    Parametros_de_URL_Primeiro_Lead: str
+
+class OrdersResponse(BaseModel):
+    data: List[OrderRow]
+    total_rows: int
+    summary: Dict[str, Any]
+
 def get_project_name(tablename: str) -> str:
     """Determina o nome do projeto baseado na tabela"""
     # Para tabelas específicas, usar projeto diferente
@@ -205,32 +256,32 @@ async def get_basic_data(
             base_query = f"""
                 SELECT
                     event_date AS Data,
-                    traffic_category `Cluster`,
-                    SUM(CASE WHEN event_name = 'paid_media' then value else 0 end) `Investimento`,
-                    SUM(CASE WHEN event_name = 'paid_media' then clicks else 0 end) `Cliques`,
-                    COUNTIF(event_name = 'session') `Sessoes`,
-                    COUNTIF(event_name = 'add_to_cart') `Adicoes_ao_Carrinho`,
-                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' then transaction_id end) `Pedidos`,
-                    SUM(CASE WHEN event_name = '{attribution_model}' then value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) end) `Receita`,
-                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN transaction_id END) `Pedidos_Pagos`,
-                    SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN value ELSE 0 END) `Receita_Paga`,
-                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN transaction_id END) `Novos_Clientes`,
-                    SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) `Receita_Novos_Clientes`"""
+                    traffic_category AS Cluster,
+                    SUM(CASE WHEN event_name = 'paid_media' then value else 0 end) AS Investimento,
+                    SUM(CASE WHEN event_name = 'paid_media' then clicks else 0 end) AS Cliques,
+                    COUNTIF(event_name = 'session') AS Sessoes,
+                    COUNTIF(event_name = 'add_to_cart') AS Adicoes_ao_Carrinho,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' then transaction_id end) AS Pedidos,
+                    SUM(CASE WHEN event_name = '{attribution_model}' then value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) end) AS Receita,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN transaction_id END) AS Pedidos_Pagos,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN value ELSE 0 END) AS Receita_Paga,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN transaction_id END) AS Novos_Clientes,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Novos_Clientes"""
         else:
             base_query = f"""
                 SELECT
                     event_date AS Data,
-                    traffic_category `Cluster`,
-                    SUM(CASE WHEN event_name = 'paid_media' then value else 0 end) `Investimento`,
-                    SUM(CASE WHEN event_name = 'paid_media' then clicks else 0 end) `Cliques`,
-                    COUNTIF(event_name = 'session') `Sessoes`,
-                    COUNTIF(event_name = 'add_to_cart') `Adicoes_ao_Carrinho`,
-                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' then transaction_id end) `Pedidos`,
-                    SUM(CASE WHEN event_name = '{attribution_model}' then value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) end) `Receita`,
-                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN transaction_id END) `Pedidos_Pagos`,
-                    SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) `Receita_Paga`,
-                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN transaction_id END) `Novos_Clientes`,
-                    SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) `Receita_Novos_Clientes`"""
+                    traffic_category AS Cluster,
+                    SUM(CASE WHEN event_name = 'paid_media' then value else 0 end) AS Investimento,
+                    SUM(CASE WHEN event_name = 'paid_media' then clicks else 0 end) AS Cliques,
+                    COUNTIF(event_name = 'session') AS Sessoes,
+                    COUNTIF(event_name = 'add_to_cart') AS Adicoes_ao_Carrinho,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' then transaction_id end) AS Pedidos,
+                    SUM(CASE WHEN event_name = '{attribution_model}' then value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) end) AS Receita,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN transaction_id END) AS Pedidos_Pagos,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Paga,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN transaction_id END) AS Novos_Clientes,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Novos_Clientes"""
 
         # Query completa
         query = f"""
@@ -394,13 +445,13 @@ async def get_daily_metrics(
         # Query para dados diários de métricas
         query = f"""
         SELECT 
-            event_date `Data`,
-            view_item `Visualizacao_de_Item`,
-            add_to_cart `Adicionar_ao_Carrinho`,
-            begin_checkout `Iniciar_Checkout`,
-            add_shipping_info `Adicionar_Informacao_de_Frete`,
-            add_payment_info `Adicionar_Informacao_de_Pagamento`,
-            purchase `Pedido`
+            event_date AS Data,
+            view_item AS Visualizacao_de_Item,
+            add_to_cart AS Adicionar_ao_Carrinho,
+            begin_checkout AS Iniciar_Checkout,
+            add_shipping_info AS Adicionar_Informacao_de_Frete,
+            add_payment_info AS Adicionar_Informacao_de_Pagamento,
+            purchase AS Pedido
         FROM `{project_name}.dbt_aggregated.{tablename}_daily_metrics`
         WHERE {date_condition}
         ORDER BY event_date
@@ -482,6 +533,351 @@ async def get_daily_metrics(
         
     except Exception as e:
         print(f"Erro ao buscar dados diários de métricas: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+@metrics_router.get("/traffic-categories")
+async def get_traffic_categories(
+    table_name: Optional[str] = None,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para listar categorias de tráfego disponíveis"""
+    
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        # Buscar informações do usuário
+        user_query = f"""
+        SELECT tablename, access_control
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        
+        user_result = client.query(user_query, job_config=job_config)
+        user_data = list(user_result.result())
+        
+        if not user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário não encontrado"
+            )
+        
+        user_tablename = user_data[0].tablename
+        
+        # Determinar qual tabela usar
+        if user_tablename == 'all':
+            if table_name:
+                tablename = table_name
+            else:
+                tablename = 'constance'
+        else:
+            if table_name and table_name != user_tablename:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{table_name}'"
+                )
+            tablename = user_tablename
+        
+        # Determinar projeto
+        project_name = get_project_name(tablename)
+        
+        # Query para buscar categorias de tráfego únicas
+        query = f"""
+        SELECT DISTINCT
+            traffic_category,
+            fs_traffic_category,
+            fsm_traffic_category
+        FROM `{project_name}.dbt_join.{tablename}_orders_sessions`
+        WHERE traffic_category IS NOT NULL 
+           OR fs_traffic_category IS NOT NULL 
+           OR fsm_traffic_category IS NOT NULL
+        ORDER BY traffic_category, fs_traffic_category, fsm_traffic_category
+        """
+        
+        print(f"Executando query de categorias: {query}")
+        
+        # Executar query
+        result = client.query(query)
+        rows = list(result.result())
+        
+        # Processar resultados
+        traffic_categories = set()
+        fs_traffic_categories = set()
+        fsm_traffic_categories = set()
+        
+        for row in rows:
+            if row.traffic_category:
+                traffic_categories.add(row.traffic_category)
+            if row.fs_traffic_category:
+                fs_traffic_categories.add(row.fs_traffic_category)
+            if row.fsm_traffic_category:
+                fsm_traffic_categories.add(row.fsm_traffic_category)
+        
+        return {
+            "table_name": tablename,
+            "traffic_categories": sorted(list(traffic_categories)),
+            "fs_traffic_categories": sorted(list(fs_traffic_categories)),
+            "fsm_traffic_categories": sorted(list(fsm_traffic_categories))
+        }
+        
+    except Exception as e:
+        print(f"Erro ao buscar categorias de tráfego: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+@metrics_router.post("/orders", response_model=OrdersResponse)
+async def get_orders(
+    request: OrdersRequest,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para buscar orders detalhados"""
+    
+    # Se não estiver no cache, buscar do BigQuery
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        # Buscar informações do usuário
+        user_query = f"""
+        SELECT tablename, access_control
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        
+        user_result = client.query(user_query, job_config=job_config)
+        user_data = list(user_result.result())
+        
+        if not user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário não encontrado"
+            )
+        
+        user_tablename = user_data[0].tablename
+        access_control = user_data[0].access_control
+        
+        # Determinar qual tabela usar
+        if user_tablename == 'all':
+            # Usuário tem acesso a todas as tabelas
+            if request.table_name:
+                # Usuário escolheu uma tabela específica
+                tablename = request.table_name
+                print(f"🔓 Usuário com acesso total escolheu tabela: {tablename}")
+            else:
+                # Usar tabela padrão (constance)
+                tablename = 'constance'
+                print(f"🔓 Usuário com acesso total usando tabela padrão: {tablename}")
+        else:
+            # Usuário tem acesso limitado a uma tabela específica
+            if request.table_name and request.table_name != user_tablename:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
+                )
+            tablename = user_tablename
+            print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
+        
+        # Determinar projeto
+        project_name = get_project_name(tablename)
+        
+        # Query de teste para verificar estrutura da tabela
+        test_query = f"""
+        SELECT *
+        FROM `{project_name}.dbt_join.{tablename}_orders_sessions`
+        WHERE date(created_at) BETWEEN '{request.start_date}' AND '{request.end_date}'
+        LIMIT 1
+        """
+        
+        print(f"=== TESTE: Verificando estrutura da tabela ===")
+        print(f"Executando query de teste: {test_query}")
+        
+        test_result = client.query(test_query)
+        test_rows = list(test_result.result())
+        
+        if test_rows:
+            test_row = test_rows[0]
+            print(f"Campos disponíveis na tabela: {list(test_row.keys())}")
+            print(f"Primeira linha completa: {dict(test_row)}")
+        else:
+            print("Nenhum resultado encontrado na tabela")
+        
+        print(f"=== FIM DO TESTE ===")
+        
+        # Construir condições de filtro para traffic_category
+        filter_conditions = [f"date(created_at) BETWEEN '{request.start_date}' AND '{request.end_date}'"]
+        
+        if request.traffic_category:
+            filter_conditions.append(f"traffic_category = '{request.traffic_category}'")
+        
+        if request.fs_traffic_category:
+            filter_conditions.append(f"fs_traffic_category = '{request.fs_traffic_category}'")
+        
+        if request.fsm_traffic_category:
+            filter_conditions.append(f"fsm_traffic_category = '{request.fsm_traffic_category}'")
+        
+        where_clause = " AND ".join(filter_conditions)
+        
+        # Construir query para orders - corrigida com base na estrutura real da tabela
+        query = f"""
+        SELECT
+            created_at as Horario,
+            COALESCE(transaction_id, '') as ID_da_Transacao,
+            COALESCE(first_name, '') as Primeiro_Nome,
+            status as Status,
+            value as Receita,
+            source_name as Canal,
+            
+            COALESCE(traffic_category, '') as Categoria_de_Trafico,
+            source as Origem,
+            COALESCE(medium, '') as Midia,
+            campaign as Campanha,
+            COALESCE(content, '') as Conteudo,
+            COALESCE(page_location, '') as Pagina_de_Entrada,
+            COALESCE(page_params, '') as Parametros_de_URL,
+
+            COALESCE(fs_traffic_category, '') as Categoria_de_Trafico_Primeiro_Clique,
+            COALESCE(fs_source, '') as Origem_Primeiro_Clique,
+            COALESCE(fs_medium, '') as Midia_Primeiro_Clique,
+            COALESCE(fs_campaign, '') as Campanha_Primeiro_Clique,
+            COALESCE(fs_content, '') as Conteudo_Primeiro_Clique,
+            COALESCE(fs_page_location, '') as Pagina_de_Entrada_Primeiro_Clique,
+            COALESCE(fs_page_params, '') as Parametros_de_URL_Primeiro_Clique,
+            
+            COALESCE(fsm_traffic_category, '') as Categoria_de_Trafico_Primeiro_Lead,
+            COALESCE(fsm_source, '') as Origem_Primeiro_Lead,
+            COALESCE(fsm_medium, '') as Midia_Primeiro_Lead,
+            COALESCE(fsm_campaign, '') as Campanha_Primeiro_Lead,
+            COALESCE(fsm_content, '') as Conteudo_Primeiro_Lead,
+            COALESCE(fsm_page_location, '') as Pagina_de_Entrada_Primeiro_Lead,
+            COALESCE(fsm_page_params, '') as Parametros_de_URL_Primeiro_Lead
+            
+        FROM `{project_name}.dbt_join.{tablename}_orders_sessions`
+        WHERE {where_clause}
+        ORDER BY created_at DESC
+        LIMIT {request.limit}
+        OFFSET {request.offset}
+    """
+        
+        print(f"=== QUERY PRINCIPAL ===")
+        print(f"Executando query principal: {query}")
+        print(f"=== FIM QUERY PRINCIPAL ===")
+        
+        # Executar query
+        result = client.query(query)
+        rows = list(result.result())
+        
+        # Debug: mostrar campos disponíveis na primeira linha
+        if rows:
+            print(f"=== RESULTADOS DA QUERY PRINCIPAL ===")
+            print(f"Total de linhas retornadas: {len(rows)}")
+            if len(rows) > 0:
+                first_row = rows[0]
+                print(f"Primeira linha: {dict(first_row)}")
+            print(f"=== FIM RESULTADOS ===")
+        
+        # Converter para formato de resposta
+        data = []
+        total_receita = 0
+        total_orders = 0
+        
+        for row in rows:
+            try:
+                # Usar getattr com valor padrão para evitar erros
+                order_row = OrderRow(
+                    Horario=str(getattr(row, 'Horário', '')),
+                    ID_da_Transacao=str(getattr(row, 'ID_da_Transacao', '')),
+                    Primeiro_Nome=str(getattr(row, 'Primeiro_Nome', '')),
+                    Status=str(getattr(row, 'Status', '')),
+                    Receita=float(getattr(row, 'Receita', 0) or 0),
+                    Canal=str(getattr(row, 'Canal', '')),
+                    
+                    # Campos do último clique
+                    Categoria_de_Trafico=str(getattr(row, 'Categoria_de_Trafico', '')),
+                    Origem=str(getattr(row, 'Origem', '')),
+                    Midia=str(getattr(row, 'Midia', '')),
+                    Campanha=str(getattr(row, 'Campanha', '')),
+                    Conteudo=str(getattr(row, 'Conteudo', '')),
+                    Pagina_de_Entrada=str(getattr(row, 'Pagina_de_Entrada', '')),
+                    Parametros_de_URL=str(getattr(row, 'Parametros_de_URL', '')),
+                    
+                    # Campos do primeiro clique
+                    Categoria_de_Trafico_Primeiro_Clique=str(getattr(row, 'Categoria_de_Trafico_Primeiro_Clique', '')),
+                    Origem_Primeiro_Clique=str(getattr(row, 'Origem_Primeiro_Clique', '')),
+                    Midia_Primeiro_Clique=str(getattr(row, 'Midia_Primeiro_Clique', '')),
+                    Campanha_Primeiro_Clique=str(getattr(row, 'Campanha_Primeiro_Clique', '')),
+                    Conteudo_Primeiro_Clique=str(getattr(row, 'Conteudo_Primeiro_Clique', '')),
+                    Pagina_de_Entrada_Primeiro_Clique=str(getattr(row, 'Pagina_de_Entrada_Primeiro_Clique', '')),
+                    Parametros_de_URL_Primeiro_Clique=str(getattr(row, 'Parametros_de_URL_Primeiro_Clique', '')),
+                    
+                    # Campos do primeiro lead
+                    Categoria_de_Trafico_Primeiro_Lead=str(getattr(row, 'Categoria_de_Trafico_Primeiro_Lead', '')),
+                    Origem_Primeiro_Lead=str(getattr(row, 'Origem_Primeiro_Lead', '')),
+                    Midia_Primeiro_Lead=str(getattr(row, 'Midia_Primeiro_Lead', '')),
+                    Campanha_Primeiro_Lead=str(getattr(row, 'Campanha_Primeiro_Lead', '')),
+                    Conteudo_Primeiro_Lead=str(getattr(row, 'Conteudo_Primeiro_Lead', '')),
+                    Pagina_de_Entrada_Primeiro_Lead=str(getattr(row, 'Pagina_de_Entrada_Primeiro_Lead', '')),
+                    Parametros_de_URL_Primeiro_Lead=str(getattr(row, 'Parametros_de_URL_Primeiro_Lead', ''))
+                )
+            except Exception as e:
+                print(f"Erro ao processar linha: {e}")
+                print(f"Tipo do objeto row: {type(row)}")
+                print(f"Atributos disponíveis: {dir(row)}")
+                if hasattr(row, '__dict__'):
+                    print(f"Dict do objeto: {row.__dict__}")
+                raise
+            data.append(order_row)
+            
+            # Calcular totais
+            total_receita += order_row.Receita
+            total_orders += 1
+        
+        # Criar resumo
+        summary = {
+            "total_orders": total_orders,
+            "total_revenue": total_receita,
+            "average_order_value": total_receita / total_orders if total_orders > 0 else 0,
+            "period": f"{request.start_date} a {request.end_date}",
+            "table_name": tablename,
+            "filters_applied": {
+                "traffic_category": request.traffic_category,
+                "fs_traffic_category": request.fs_traffic_category,
+                "fsm_traffic_category": request.fsm_traffic_category
+            }
+        }
+        
+        return OrdersResponse(
+            data=data,
+            total_rows=len(data),
+            summary=summary
+        )
+        
+    except Exception as e:
+        print(f"Erro ao buscar orders: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro interno do servidor: {str(e)}"
