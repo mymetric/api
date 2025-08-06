@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import os
 
 from utils import verify_token, TokenData, get_bigquery_client
-from cache_manager import basic_data_cache
+from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache
 
 # Router para métricas
 metrics_router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -373,7 +373,29 @@ async def get_daily_metrics(
     request: DailyMetricsRequest,
     token: TokenData = Depends(verify_token)
 ):
-    """Endpoint para buscar dados diários de métricas do funil de conversão"""
+    """Endpoint para buscar dados diários de métricas do funil de conversão com cache de 1 hora"""
+    
+    # Parâmetros para o cache
+    cache_params = {
+        'email': token.email,
+        'start_date': request.start_date,
+        'end_date': request.end_date,
+        'table_name': request.table_name
+    }
+    
+    # Tentar buscar do cache primeiro
+    cached_data = daily_metrics_cache.get(**cache_params)
+    if cached_data:
+        return DailyMetricsResponse(
+            data=cached_data['data'],
+            total_rows=cached_data['total_rows'],
+            summary=cached_data['summary'],
+            cache_info={
+                'source': 'cache',
+                'cached_at': cached_data.get('cached_at'),
+                'ttl_hours': 1
+            }
+        )
     
     # Se não estiver no cache, buscar do BigQuery
     client = get_bigquery_client()
@@ -520,13 +542,24 @@ async def get_daily_metrics(
             "user_access": "all" if user_tablename == 'all' else "limited"
         }
         
+        # Preparar resposta
+        response_data = {
+            'data': [row.dict() for row in data],
+            'total_rows': len(data),
+            'summary': summary,
+            'cached_at': datetime.now().isoformat()
+        }
+        
+        # Armazenar no cache
+        daily_metrics_cache.set(response_data, **cache_params)
+        
         return DailyMetricsResponse(
             data=data,
             total_rows=len(data),
             summary=summary,
             cache_info={
                 'source': 'database',
-                'cached_at': datetime.now().isoformat(),
+                'cached_at': response_data['cached_at'],
                 'ttl_hours': 1
             }
         )
@@ -645,7 +678,29 @@ async def get_orders(
     request: OrdersRequest,
     token: TokenData = Depends(verify_token)
 ):
-    """Endpoint para buscar orders detalhados"""
+    """Endpoint para buscar orders detalhados com cache de 1 hora"""
+    
+    # Parâmetros para o cache
+    cache_params = {
+        'email': token.email,
+        'start_date': request.start_date,
+        'end_date': request.end_date,
+        'table_name': request.table_name,
+        'limit': request.limit,
+        'offset': request.offset,
+        'traffic_category': request.traffic_category,
+        'fs_traffic_category': request.fs_traffic_category,
+        'fsm_traffic_category': request.fsm_traffic_category
+    }
+    
+    # Tentar buscar do cache primeiro
+    cached_data = orders_cache.get(**cache_params)
+    if cached_data:
+        return OrdersResponse(
+            data=cached_data['data'],
+            total_rows=cached_data['total_rows'],
+            summary=cached_data['summary']
+        )
     
     # Se não estiver no cache, buscar do BigQuery
     client = get_bigquery_client()
@@ -869,6 +924,17 @@ async def get_orders(
                 "fsm_traffic_category": request.fsm_traffic_category
             }
         }
+        
+        # Preparar resposta
+        response_data = {
+            'data': [row.dict() for row in data],
+            'total_rows': len(data),
+            'summary': summary,
+            'cached_at': datetime.now().isoformat()
+        }
+        
+        # Armazenar no cache
+        orders_cache.set(response_data, **cache_params)
         
         return OrdersResponse(
             data=data,
@@ -1409,12 +1475,18 @@ async def flush_cache(token: TokenData = Depends(verify_token)):
                 detail="Apenas administradores podem fazer flush do cache"
             )
         
-        # Fazer flush do cache
-        stats = basic_data_cache.flush()
+        # Fazer flush de todos os caches
+        basic_stats = basic_data_cache.flush()
+        daily_metrics_stats = daily_metrics_cache.flush()
+        orders_stats = orders_cache.flush()
         
         return {
-            "message": "Cache limpo com sucesso",
-            "stats": stats
+            "message": "Todos os caches limpos com sucesso",
+            "stats": {
+                "basic_data_cache": basic_stats,
+                "daily_metrics_cache": daily_metrics_stats,
+                "orders_cache": orders_stats
+            }
         }
         
     except Exception as e:
@@ -1451,12 +1523,18 @@ async def flush_expired_cache(token: TokenData = Depends(verify_token)):
                 detail="Apenas administradores podem gerenciar o cache"
             )
         
-        # Fazer flush apenas das entradas expiradas
-        stats = basic_data_cache.flush_expired()
+        # Fazer flush apenas das entradas expiradas de todos os caches
+        basic_stats = basic_data_cache.flush_expired()
+        daily_metrics_stats = daily_metrics_cache.flush_expired()
+        orders_stats = orders_cache.flush_expired()
         
         return {
-            "message": "Entradas expiradas removidas com sucesso",
-            "stats": stats
+            "message": "Entradas expiradas removidas com sucesso de todos os caches",
+            "stats": {
+                "basic_data_cache": basic_stats,
+                "daily_metrics_cache": daily_metrics_stats,
+                "orders_cache": orders_stats
+            }
         }
         
     except Exception as e:
@@ -1493,12 +1571,18 @@ async def get_cache_stats(token: TokenData = Depends(verify_token)):
                 detail="Apenas administradores podem ver estatísticas do cache"
             )
         
-        # Obter estatísticas do cache
-        stats = basic_data_cache.get_stats()
+        # Obter estatísticas de todos os caches
+        basic_stats = basic_data_cache.get_stats()
+        daily_metrics_stats = daily_metrics_cache.get_stats()
+        orders_stats = orders_cache.get_stats()
         
         return {
-            "message": "Estatísticas do cache",
-            "stats": stats
+            "message": "Estatísticas de todos os caches",
+            "stats": {
+                "basic_data_cache": basic_stats,
+                "daily_metrics_cache": daily_metrics_stats,
+                "orders_cache": orders_stats
+            }
         }
         
     except Exception as e:

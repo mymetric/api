@@ -130,4 +130,8 @@ class CacheManager:
             return 0.0
 
 # Instância global do cache
-basic_data_cache = CacheManager(ttl_hours=1) 
+basic_data_cache = CacheManager(ttl_hours=1)
+
+# Instâncias de cache para outros endpoints
+daily_metrics_cache = CacheManager(ttl_hours=1)
+orders_cache = CacheManager(ttl_hours=1) 
