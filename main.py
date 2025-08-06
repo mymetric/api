@@ -14,6 +14,7 @@ import hashlib
 # Importar utilitários e router de métricas
 from utils import verify_token, TokenData, get_bigquery_client, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
 from metrics import metrics_router
+from zapi_service import zapi_service
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -123,6 +124,12 @@ async def login(user_credentials: UserLogin):
         access_token = create_access_token(
             data={"sub": user.email}, expires_delta=access_token_expires
         )
+        
+        # Enviar notificação de login via Z-API
+        try:
+            zapi_service.send_login_notification(user.email)
+        except Exception as e:
+            print(f"Erro ao enviar notificação de login: {e}")
         
         return {"access_token": access_token, "token_type": "bearer"}
         

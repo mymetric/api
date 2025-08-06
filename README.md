@@ -9,6 +9,7 @@ Uma API robusta para dashboard de métricas com autenticação JWT, integração
 - **Controle de acesso** baseado em permissões
 - **Isolamento de dados** por usuário/cliente
 - **Suporte a múltiplos níveis** de acesso (admin, read, full)
+- **Notificações automáticas** via WhatsApp (Z-API) em cada login
 
 ### 📈 Métricas e Analytics
 - **Dados básicos** do dashboard com cache de 1 hora
@@ -21,6 +22,12 @@ Uma API robusta para dashboard de métricas com autenticação JWT, integração
 - **Performance otimizada** (99.8% mais rápido)
 - **Gerenciamento de cache** via API
 - **Estatísticas em tempo real**
+
+### 📱 Notificações WhatsApp
+- **Integração Z-API** para envio de mensagens
+- **Notificações automáticas** de login
+- **Mensagens personalizadas** com emojis e formatação
+- **Configuração flexível** de destinatários
 
 ### 🔧 Gerenciamento de Dados
 - **Integração BigQuery** nativa
@@ -57,8 +64,11 @@ api/
 ├── QUICK_START.md        # Guia de início rápido
 ├── cache_endpoints_docs.md # Documentação do cache
 ├── sample_data.sql       # Dados de exemplo BigQuery
-└── credentials/          # Credenciais Google Cloud
-    └── service-account-key.json
+├── credentials/          # Credenciais Google Cloud
+│   ├── service-account-key.json
+│   └── zapi_config.json  # Configuração Z-API
+├── zapi_service.py       # Serviço de notificações WhatsApp
+└── test_zapi.py          # Testes da integração Z-API
 ```
 
 ## ⚡ Instalação Rápida
@@ -117,6 +127,21 @@ PORT=8000
 3. Criar Service Account
 4. Baixar JSON de credenciais
 5. Salvar em `credentials/service-account-key.json`
+
+### Configuração Z-API (WhatsApp)
+1. Criar conta no [Z-API](https://z-api.io)
+2. Configurar instância e token
+3. Editar `credentials/zapi_config.json`:
+```json
+{
+    "url": "https://api.z-api.io/instances/SUA_INSTANCIA/token/SEU_TOKEN/send-text",
+    "client_token": "SEU_CLIENT_TOKEN"
+}
+```
+4. Testar integração:
+```bash
+python3 test_zapi.py
+```
 
 ## 📚 Endpoints da API
 
