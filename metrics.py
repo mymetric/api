@@ -140,9 +140,14 @@ def get_project_name(tablename: str) -> str:
     """Determina o nome do projeto baseado na tabela"""
     # Para tabelas específicas, usar projeto diferente
     if tablename in ['coffeemais', 'endogen']:
-        return 'mymetric-hub-shopify'
+        project = 'mymetric-hub-shopify'
+    elif tablename == 'havaianas':
+        project = 'bq-mktbr'
     else:
-        return 'mymetric-hub-shopify'
+        project = 'mymetric-hub-shopify'
+    
+    print(f"📊 Usando projeto: {project} para tabela: {tablename}")
+    return project
 
 @metrics_router.post("/basic-data", response_model=BasicDataResponse)
 async def get_basic_data(
