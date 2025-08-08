@@ -262,4 +262,10 @@ async def get_profile(token: TokenData = Depends(verify_token)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=8000,
+        timeout_keep_alive=65,  # Manter conexão viva por 65s
+        timeout_graceful_shutdown=30  # Tempo para shutdown gracioso
+    ) 
