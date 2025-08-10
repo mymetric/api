@@ -136,6 +136,19 @@ class OrdersResponse(BaseModel):
     total_rows: int
     summary: Dict[str, Any]
 
+# Modelos para metas do usuário
+class UserGoalsRequest(BaseModel):
+    table_name: str
+
+class UserGoalsResponse(BaseModel):
+    username: str
+    goals: Dict[str, Any]
+    message: str
+
+class UpdateUserGoalsRequest(BaseModel):
+    username: str
+    goals: Dict[str, Any]
+
 def get_project_name(tablename: str) -> str:
     """Determina o nome do projeto baseado na tabela"""
     # Para tabelas específicas, usar projeto diferente
@@ -1462,7 +1475,193 @@ async def get_available_tables(token: TokenData = Depends(verify_token)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro interno do servidor: {str(e)}"
-        )   
+        )
+
+@metrics_router.post("/goals", response_model=UserGoalsResponse)
+async def get_user_goals(
+    request: UserGoalsRequest,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para buscar metas do usuário"""
+    
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        # Buscar informações do usuário para verificar permissões
+        user_query = f"""
+        SELECT tablename, access_control
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        
+        user_result = client.query(user_query, job_config=job_config)
+        user_data = list(user_result.result())
+        
+        if not user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário não encontrado"
+            )
+        
+        user_tablename = user_data[0].tablename
+        
+        # Verificar permissões para acessar a tabela solicitada
+        if user_tablename == 'all':
+            # Usuário com acesso total pode acessar qualquer tabela
+            tablename = request.table_name
+            print(f"🔓 Usuário com acesso total acessando metas da tabela: {tablename}")
+        else:
+            # Usuário com acesso limitado só pode acessar sua própria tabela
+            if request.table_name != user_tablename:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar metas da tabela '{request.table_name}'"
+                )
+            tablename = request.table_name
+            print(f"🔒 Usuário com acesso limitado acessando metas da tabela: {tablename}")
+
+        # Query para buscar metas do usuário
+        goals_query = f"""
+        SELECT goals
+        FROM `mymetric-hub-shopify.dbt_config.user_goals`
+        WHERE username = '{tablename}'
+        LIMIT 1
+        """
+        
+        print(f"Executando query de metas: {goals_query}")
+        
+        # Executar query
+        goals_result = client.query(goals_query)
+        goals_data = list(goals_result.result())
+        
+        if not goals_data:
+            # Se não encontrar metas, retornar metas padrão
+            default_goals = {
+                "revenue_goal": 100000.0,
+                "orders_goal": 1000,
+                "conversion_rate_goal": 5.0,
+                "roas_goal": 8.0,
+                "new_customers_goal": 100
+            }
+            
+            return UserGoalsResponse(
+                username=tablename,
+                goals=default_goals,
+                message="Metas padrão aplicadas (nenhuma meta configurada encontrada)"
+            )
+        
+        # Processar metas encontradas
+        goals = goals_data[0].goals
+        
+        # Se goals for string JSON, converter para dict
+        if isinstance(goals, str):
+            import json
+            try:
+                goals = json.loads(goals)
+            except json.JSONDecodeError:
+                goals = {}
+        
+        # Se goals for None ou vazio, usar metas padrão
+        if not goals:
+            goals = {
+                "revenue_goal": 100000.0,
+                "orders_goal": 1000,
+                "conversion_rate_goal": 5.0,
+                "roas_goal": 8.0,
+                "new_customers_goal": 100
+            }
+        
+        return UserGoalsResponse(
+            username=tablename,
+            goals=goals,
+            message="Metas carregadas com sucesso"
+        )
+        
+    except Exception as e:
+        print(f"Erro ao buscar metas do usuário: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+@metrics_router.post("/goals/update")
+async def update_user_goals(
+    request: UpdateUserGoalsRequest,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para atualizar metas do usuário (apenas administradores)"""
+    
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        # Verificar se o usuário é admin
+        admin_query = f"""
+        SELECT admin
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        
+        admin_result = client.query(admin_query, job_config=job_config)
+        admin_data = list(admin_result.result())
+        
+        if not admin_data or not admin_data[0].admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Apenas administradores podem atualizar metas"
+            )
+        
+        # Query para atualizar ou inserir metas
+        update_query = f"""
+        MERGE `mymetric-hub-shopify.dbt_config.user_goals` AS target
+        USING (SELECT '{request.username}' as username) AS source
+        ON target.username = source.username
+        WHEN MATCHED THEN
+            UPDATE SET goals = '{request.goals}'
+        WHEN NOT MATCHED THEN
+            INSERT (username, goals) VALUES ('{request.username}', '{request.goals}')
+        """
+        
+        print(f"Executando query de atualização de metas: {update_query}")
+        
+        # Executar query
+        update_result = client.query(update_query)
+        update_result.result()  # Aguardar conclusão
+        
+        return {
+            "message": "Metas atualizadas com sucesso",
+            "username": request.username,
+            "goals": request.goals,
+            "updated_at": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        print(f"Erro ao atualizar metas do usuário: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
 
 @metrics_router.post("/cache/flush")
 async def flush_cache(token: TokenData = Depends(verify_token)):
