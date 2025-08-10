@@ -145,69 +145,7 @@ async def login(user_credentials: UserLogin):
             detail=f"Erro interno do servidor: {str(e)}"
         )
 
-@app.get("/users", response_model=List[User])
-async def get_users(token: TokenData = Depends(verify_token)):
-    """Endpoint para buscar todos os usuários (apenas admin)"""
-    client = get_bigquery_client()
-    if not client:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Erro de conexão com o banco de dados"
-        )
-    
-    try:
-        # Verificar se o usuário é admin
-        query_admin = f"""
-        SELECT admin
-        FROM `mymetric-hub-shopify.dbt_config.users`
-        WHERE email = @email
-        """
-        
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("email", "STRING", token.email),
-            ]
-        )
-        
-        query_job = client.query(query_admin, job_config=job_config)
-        admin_result = list(query_job.result())
-        
-        if not admin_result or not admin_result[0].admin:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Acesso negado - Apenas administradores"
-            )
-        
-        # Buscar todos os usuários
-        query = f"""
-        SELECT
-            email,
-            admin,
-            access_control,
-            tablename
-        FROM `mymetric-hub-shopify.dbt_config.users`
-        """
-        
-        query_job = client.query(query)
-        results = list(query_job.result())
-        
-        users = []
-        for row in results:
-            users.append(User(
-                email=row.email,
-                admin=row.admin,
-                access_control=row.access_control if row.access_control else "",
-                tablename=row.tablename
-            ))
-        
-        return users
-        
-    except Exception as e:
-        print(f"Erro ao buscar usuários: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Erro interno do servidor"
-        )
+
 
 @app.get("/profile")
 async def get_profile(token: TokenData = Depends(verify_token)):
