@@ -1159,6 +1159,24 @@ async def get_detailed_data(
         # Determinar projeto
         project_name = get_project_name(tablename)
         
+        # Processar modelo de atribuição (igual ao basic-data)
+        attribution_model = request.attribution_model or 'Último Clique Não Direto'
+        
+        print(f"🔍 Modelo de atribuição original: {attribution_model}")
+        
+        if attribution_model == 'Último Clique Não Direto':
+            attribution_model = 'purchase'
+            print("🔄 Convertido 'Último Clique Não Direto' para 'purchase'")
+        elif attribution_model == 'Primeiro Clique':
+            attribution_model = 'fs_purchase'
+            print("🔄 Convertido 'Primeiro Clique' para 'fs_purchase'")
+        elif attribution_model == 'Assinaturas' and tablename == 'coffeemais':
+            attribution_model = 'purchase_subscription'
+            print("🔄 Convertido 'Assinaturas' para 'purchase_subscription'")
+        
+        print(f"🔍 Modelo de atribuição convertido: {attribution_model}")
+        print(f"🔍 Usando na query: event_name = '{attribution_model}'")
+        
         # Construir condição de data
         date_condition = f"event_date BETWEEN '{request.start_date}' AND '{request.end_date}'"
         
@@ -1177,10 +1195,10 @@ async def get_detailed_data(
 
             COUNTIF(event_name = 'session') as `Sessoes`,
             COUNTIF(event_name = 'add_to_cart') as `Adicoes_ao_Carrinho`,
-            COUNT(DISTINCT CASE WHEN event_name = '{request.attribution_model}' then transaction_id end) as `Pedidos`,
-            SUM(CASE WHEN event_name = '{request.attribution_model}' then value - total_discounts + shipping_value end) as `Receita`,
-            COUNT(DISTINCT CASE WHEN event_name = '{request.attribution_model}' and status in ('paid', 'authorized') THEN transaction_id END) as `Pedidos_Pagos`,
-            SUM(CASE WHEN event_name = '{request.attribution_model}' and status in ('paid', 'authorized') THEN value - total_discounts + shipping_value ELSE 0 END) as `Receita_Paga`
+            COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' then transaction_id end) as `Pedidos`,
+            SUM(CASE WHEN event_name = '{attribution_model}' then value - total_discounts + shipping_value end) as `Receita`,
+            COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN transaction_id END) as `Pedidos_Pagos`,
+            SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN value - total_discounts + shipping_value ELSE 0 END) as `Receita_Paga`
 
         FROM `{project_name}.dbt_join.{tablename}_events_long`
         WHERE {date_condition}
