@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import os
 
 from utils import verify_token, TokenData, get_bigquery_client
-from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache
+from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, last_request_manager
 
 # Router para métricas
 metrics_router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -148,6 +148,36 @@ class UserGoalsResponse(BaseModel):
 class UpdateUserGoalsRequest(BaseModel):
     username: str
     goals: Dict[str, Any]
+
+# Novos modelos para dados detalhados
+class DetailedDataRequest(BaseModel):
+    start_date: str
+    end_date: str
+    attribution_model: Optional[str] = "purchase"
+    table_name: Optional[str] = None
+
+class DetailedDataRow(BaseModel):
+    Data: str
+    Hora: int
+    Origem: str
+    Midia: str
+    Campanha: str
+    Pagina_de_Entrada: str
+    Conteudo: str
+    Cupom: str
+    Cluster: str
+    Sessoes: int
+    Adicoes_ao_Carrinho: int
+    Pedidos: int
+    Receita: float
+    Pedidos_Pagos: int
+    Receita_Paga: float
+
+class DetailedDataResponse(BaseModel):
+    data: List[DetailedDataRow]
+    total_rows: int
+    summary: Dict[str, Any]
+    cache_info: Optional[Dict[str, Any]] = None
 
 def get_project_name(tablename: str) -> str:
     """Determina o nome do projeto baseado na tabela"""
@@ -365,6 +395,19 @@ async def get_basic_data(
             'cached_at': datetime.now().isoformat()
         }
         
+        # Salvar último request
+        last_request_manager.save_last_request(
+            'basic-data',
+            {
+                'start_date': request.start_date,
+                'end_date': request.end_date,
+                'table_name': request.table_name,
+                'attribution_model': request.attribution_model,
+                'filters': request.filters
+            },
+            token.email
+        )
+        
         # Armazenar no cache
         basic_data_cache.set(response_data, **cache_params)
         
@@ -567,6 +610,17 @@ async def get_daily_metrics(
             'summary': summary,
             'cached_at': datetime.now().isoformat()
         }
+        
+        # Salvar último request
+        last_request_manager.save_last_request(
+            'daily-metrics',
+            {
+                'start_date': request.start_date,
+                'end_date': request.end_date,
+                'table_name': request.table_name
+            },
+            token.email
+        )
         
         # Armazenar no cache
         daily_metrics_cache.set(response_data, **cache_params)
@@ -860,6 +914,22 @@ async def get_orders(
             'cached_at': datetime.now().isoformat()
         }
         
+        # Salvar último request
+        last_request_manager.save_last_request(
+            'orders',
+            {
+                'start_date': request.start_date,
+                'end_date': request.end_date,
+                'table_name': request.table_name,
+                'limit': request.limit,
+                'offset': request.offset,
+                'traffic_category': request.traffic_category,
+                'fs_traffic_category': request.fs_traffic_category,
+                'fsm_traffic_category': request.fsm_traffic_category
+            },
+            token.email
+        )
+        
         # Armazenar no cache
         orders_cache.set(response_data, **cache_params)
         
@@ -957,6 +1027,15 @@ async def get_user_goals(
                 "new_customers_goal": 100
             }
             
+            # Salvar último request
+            last_request_manager.save_last_request(
+                'goals',
+                {
+                    'table_name': request.table_name
+                },
+                token.email
+            )
+            
             return UserGoalsResponse(
                 username=tablename,
                 goals=default_goals,
@@ -984,6 +1063,15 @@ async def get_user_goals(
                 "new_customers_goal": 100
             }
         
+        # Salvar último request
+        last_request_manager.save_last_request(
+            'goals',
+            {
+                'table_name': request.table_name
+            },
+            token.email
+        )
+        
         return UserGoalsResponse(
             username=tablename,
             goals=goals,
@@ -992,6 +1080,373 @@ async def get_user_goals(
         
     except Exception as e:
         print(f"Erro ao buscar metas do usuário: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+@metrics_router.post("/detailed-data", response_model=DetailedDataResponse)
+async def get_detailed_data(
+    request: DetailedDataRequest,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para buscar dados detalhados com métricas agregadas e cache de 1 hora"""
+    
+    # Verificar cache primeiro
+    cache_params = {
+        'email': token.email, 
+        'start_date': request.start_date, 
+        'end_date': request.end_date, 
+        'table_name': request.table_name,
+        'attribution_model': request.attribution_model
+    }
+    
+    cached_data = detailed_data_cache.get(**cache_params)
+    if cached_data:
+        return DetailedDataResponse(
+            data=cached_data['data'], 
+            total_rows=cached_data['total_rows'], 
+            summary=cached_data['summary'],
+            cache_info={'source': 'cache', 'cached_at': cached_data.get('cached_at'), 'ttl_hours': 1}
+        )
+    
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        # Buscar informações do usuário
+        user_query = f"""
+        SELECT tablename, access_control
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        
+        user_result = client.query(user_query, job_config=job_config)
+        user_data = list(user_result.result())
+        
+        if not user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário não encontrado"
+            )
+        
+        user_tablename = user_data[0].tablename
+        
+        # Determinar qual tabela usar
+        if user_tablename == 'all':
+            if request.table_name:
+                tablename = request.table_name
+            else:
+                tablename = 'constance'
+        else:
+            if request.table_name and request.table_name != user_tablename:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
+                )
+            tablename = user_tablename
+        
+        # Determinar projeto
+        project_name = get_project_name(tablename)
+        
+        # Construir condição de data
+        date_condition = f"event_date BETWEEN '{request.start_date}' AND '{request.end_date}'"
+        
+        # Query principal
+        query = f"""
+        SELECT
+            event_date AS Data,
+            extract(hour from created_at) as Hora,
+            source as Origem,
+            medium as `Midia`, 
+            campaign as Campanha,
+            page_location as `Pagina_de_Entrada`,
+            content as `Conteudo`,
+            coalesce(discount_code, 'Sem Cupom') as `Cupom`,
+            traffic_category as `Cluster`,
+
+            COUNTIF(event_name = 'session') as `Sessoes`,
+            COUNTIF(event_name = 'add_to_cart') as `Adicoes_ao_Carrinho`,
+            COUNT(DISTINCT CASE WHEN event_name = '{request.attribution_model}' then transaction_id end) as `Pedidos`,
+            SUM(CASE WHEN event_name = '{request.attribution_model}' then value - total_discounts + shipping_value end) as `Receita`,
+            COUNT(DISTINCT CASE WHEN event_name = '{request.attribution_model}' and status in ('paid', 'authorized') THEN transaction_id END) as `Pedidos_Pagos`,
+            SUM(CASE WHEN event_name = '{request.attribution_model}' and status in ('paid', 'authorized') THEN value - total_discounts + shipping_value ELSE 0 END) as `Receita_Paga`
+
+        FROM `{project_name}.dbt_join.{tablename}_events_long`
+        WHERE {date_condition}
+        GROUP BY ALL
+        ORDER BY Pedidos DESC
+        """
+        
+        print(f"Executando query de dados detalhados: {query}")
+        
+        # Executar query
+        result = client.query(query)
+        rows = list(result.result())
+        
+        # Processar resultados
+        data = []
+        total_revenue = 0.0
+        total_orders = 0
+        total_sessions = 0
+        total_add_to_cart = 0
+        
+        for row in rows:
+            data.append(DetailedDataRow(
+                Data=str(row.Data),
+                Hora=int(row.Hora) if row.Hora else 0,
+                Origem=str(row.Origem) if row.Origem else '',
+                Midia=str(row.Midia) if row.Midia else '',
+                Campanha=str(row.Campanha) if row.Campanha else '',
+                Pagina_de_Entrada=str(row.Pagina_de_Entrada) if row.Pagina_de_Entrada else '',
+                Conteudo=str(row.Conteudo) if row.Conteudo else '',
+                Cupom=str(row.Cupom) if row.Cupom else '',
+                Cluster=str(row.Cluster) if row.Cluster else '',
+                Sessoes=int(row.Sessoes) if row.Sessoes else 0,
+                Adicoes_ao_Carrinho=int(row.Adicoes_ao_Carrinho) if row.Adicoes_ao_Carrinho else 0,
+                Pedidos=int(row.Pedidos) if row.Pedidos else 0,
+                Receita=float(row.Receita) if row.Receita else 0.0,
+                Pedidos_Pagos=int(row.Pedidos_Pagos) if row.Pedidos_Pagos else 0,
+                Receita_Paga=float(row.Receita_Paga) if row.Receita_Paga else 0.0
+            ))
+            
+            total_revenue += float(row.Receita) if row.Receita else 0.0
+            total_orders += int(row.Pedidos) if row.Pedidos else 0
+            total_sessions += int(row.Sessoes) if row.Sessoes else 0
+            total_add_to_cart += int(row.Adicoes_ao_Carrinho) if row.Adicoes_ao_Carrinho else 0
+        
+        # Calcular resumo
+        summary = {
+            "total_revenue": total_revenue,
+            "total_orders": total_orders,
+            "total_sessions": total_sessions,
+            "total_add_to_cart": total_add_to_cart,
+            "conversion_rate": (total_orders / total_sessions * 100) if total_sessions > 0 else 0,
+            "add_to_cart_rate": (total_add_to_cart / total_sessions * 100) if total_sessions > 0 else 0,
+            "table_name": tablename,
+            "project_name": project_name,
+            "attribution_model": request.attribution_model
+        }
+        
+        # Salvar último request
+        last_request_manager.save_last_request(
+            'detailed-data',
+            {
+                'start_date': request.start_date,
+                'end_date': request.end_date,
+                'table_name': request.table_name,
+                'attribution_model': request.attribution_model
+            },
+            token.email
+        )
+        
+        # Preparar dados para cache
+        response_data = {
+            'data': [row.dict() for row in data],
+            'total_rows': len(data),
+            'summary': summary,
+            'cached_at': datetime.now().isoformat()
+        }
+        
+        # Salvar no cache
+        detailed_data_cache.set(response_data, **cache_params)
+        
+        return DetailedDataResponse(
+            data=data,
+            total_rows=len(data),
+            summary=summary,
+            cache_info={'source': 'database', 'cached_at': response_data['cached_at'], 'ttl_hours': 1}
+        )
+        
+    except Exception as e:
+        print(f"Erro ao buscar dados detalhados: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+async def execute_last_request(endpoint: str, request_data: Dict[str, Any], token: TokenData):
+    """Função auxiliar para executar a consulta baseada no último request"""
+    
+    if endpoint == "basic-data":
+        from pydantic import BaseModel
+        class TempRequest(BaseModel):
+            start_date: str
+            end_date: str
+            attribution_model: Optional[str] = "Último Clique Não Direto"
+            filters: Optional[Dict[str, Any]] = None
+            table_name: Optional[str] = None
+        
+        temp_request = TempRequest(**request_data)
+        return await get_basic_data(temp_request, token)
+    
+    elif endpoint == "daily-metrics":
+        from pydantic import BaseModel
+        class TempRequest(BaseModel):
+            start_date: str
+            end_date: str
+            table_name: Optional[str] = None
+        
+        temp_request = TempRequest(**request_data)
+        return await get_daily_metrics(temp_request, token)
+    
+    elif endpoint == "orders":
+        from pydantic import BaseModel
+        class TempRequest(BaseModel):
+            start_date: str
+            end_date: str
+            table_name: Optional[str] = None
+            limit: Optional[int] = 1000
+            offset: Optional[int] = 0
+            traffic_category: Optional[str] = None
+            fs_traffic_category: Optional[str] = None
+            fsm_traffic_category: Optional[str] = None
+        
+        temp_request = TempRequest(**request_data)
+        return await get_orders(temp_request, token)
+    
+    elif endpoint == "goals":
+        from pydantic import BaseModel
+        class TempRequest(BaseModel):
+            table_name: str
+        
+        temp_request = TempRequest(**request_data)
+        return await get_user_goals(temp_request, token)
+    
+    elif endpoint == "detailed-data":
+        from pydantic import BaseModel
+        class TempRequest(BaseModel):
+            start_date: str
+            end_date: str
+            attribution_model: Optional[str] = "purchase"
+            table_name: Optional[str] = None
+        
+        temp_request = TempRequest(**request_data)
+        return await get_detailed_data(temp_request, token)
+    
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Endpoint '{endpoint}' não suportado para execução automática"
+        )
+
+@metrics_router.get("/last-request/{endpoint}")
+async def get_last_request(
+    endpoint: str,
+    table_name: str,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para buscar e executar o último request de um endpoint específico para um cliente específico"""
+    
+    try:
+        last_request = last_request_manager.get_last_request(endpoint, table_name)
+        
+        if not last_request:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Nenhum request encontrado para o endpoint '{endpoint}' e cliente '{table_name}'"
+            )
+        
+        # Verificar se o usuário tem permissão para ver este request
+        if last_request['user_email'] != token.email:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Você só pode ver seus próprios últimos requests"
+            )
+        
+        # Executar a consulta automaticamente
+        print(f"🔄 Executando último request para {endpoint} - Cliente: {table_name}")
+        result = await execute_last_request(endpoint, last_request['request_data'], token)
+        
+        # Adicionar informações do último request ao resultado
+        if hasattr(result, 'dict'):
+            result_dict = result.dict()
+        else:
+            result_dict = result
+        
+        result_dict['last_request_info'] = {
+            "endpoint": endpoint,
+            "table_name": table_name,
+            "request_data": last_request['request_data'],
+            "user_email": last_request['user_email'],
+            "timestamp": last_request['timestamp'],
+            "executed_at": datetime.now().isoformat()
+        }
+        
+        return result_dict
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Erro ao executar último request: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+@metrics_router.get("/last-request/stats")
+async def get_last_request_stats(token: TokenData = Depends(verify_token)):
+    """Endpoint para ver estatísticas do storage de últimos requests"""
+    try:
+        stats = last_request_manager.get_storage_stats()
+        return {
+            "message": "Estatísticas do storage de últimos requests",
+            "stats": stats
+        }
+    except Exception as e:
+        print(f"Erro ao buscar estatísticas do last-request: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+@metrics_router.get("/last-request/{endpoint}/all")
+async def get_all_last_requests(
+    endpoint: str,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para buscar todos os últimos requests de um endpoint para todos os clientes"""
+    
+    try:
+        all_requests = last_request_manager.get_all_last_requests(endpoint)
+        
+        if not all_requests:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Nenhum request encontrado para o endpoint '{endpoint}'"
+            )
+        
+        # Filtrar apenas requests do usuário atual
+        user_requests = {}
+        for table_name, request_data in all_requests.items():
+            if request_data['user_email'] == token.email:
+                user_requests[table_name] = request_data
+        
+        if not user_requests:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Nenhum request encontrado para o endpoint '{endpoint}' do seu usuário"
+            )
+        
+        return {
+            "endpoint": endpoint,
+            "requests": user_requests
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Erro ao buscar todos os últimos requests: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro interno do servidor: {str(e)}"
@@ -1028,13 +1483,15 @@ async def flush_cache(token: TokenData = Depends(verify_token)):
         basic_stats = basic_data_cache.flush()
         daily_metrics_stats = daily_metrics_cache.flush()
         orders_stats = orders_cache.flush()
+        detailed_data_stats = detailed_data_cache.flush()
         
         return {
             "message": "Todos os caches limpos com sucesso",
             "stats": {
                 "basic_data_cache": basic_stats,
                 "daily_metrics_cache": daily_metrics_stats,
-                "orders_cache": orders_stats
+                "orders_cache": orders_stats,
+                "detailed_data_cache": detailed_data_stats
             }
         }
         
@@ -1076,13 +1533,15 @@ async def flush_expired_cache(token: TokenData = Depends(verify_token)):
         basic_stats = basic_data_cache.flush_expired()
         daily_metrics_stats = daily_metrics_cache.flush_expired()
         orders_stats = orders_cache.flush_expired()
+        detailed_data_stats = detailed_data_cache.flush_expired()
         
         return {
             "message": "Entradas expiradas removidas com sucesso de todos os caches",
             "stats": {
                 "basic_data_cache": basic_stats,
                 "daily_metrics_cache": daily_metrics_stats,
-                "orders_cache": orders_stats
+                "orders_cache": orders_stats,
+                "detailed_data_cache": detailed_data_stats
             }
         }
         
@@ -1124,13 +1583,15 @@ async def get_cache_stats(token: TokenData = Depends(verify_token)):
         basic_stats = basic_data_cache.get_stats()
         daily_metrics_stats = daily_metrics_cache.get_stats()
         orders_stats = orders_cache.get_stats()
+        detailed_data_stats = detailed_data_cache.get_stats()
         
         return {
             "message": "Estatísticas de todos os caches",
             "stats": {
                 "basic_data_cache": basic_stats,
                 "daily_metrics_cache": daily_metrics_stats,
-                "orders_cache": orders_stats
+                "orders_cache": orders_stats,
+                "detailed_data_cache": detailed_data_stats
             }
         }
         
