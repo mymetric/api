@@ -135,7 +135,7 @@ basic_data_cache = CacheManager(ttl_hours=1)
 # Instâncias de cache para outros endpoints
 daily_metrics_cache = CacheManager(ttl_hours=1)
 orders_cache = CacheManager(ttl_hours=1)
-detailed_data_cache = CacheManager(ttl_hours=1)
+detailed_data_cache = CacheManager(ttl_hours=4)
 
 # Sistema para salvar último request
 import os

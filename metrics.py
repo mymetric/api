@@ -155,6 +155,9 @@ class DetailedDataRequest(BaseModel):
     end_date: str
     attribution_model: Optional[str] = "purchase"
     table_name: Optional[str] = None
+    limit: Optional[int] = 1000  # Limitar resultados
+    offset: Optional[int] = 0    # Paginação
+    order_by: Optional[str] = "Pedidos"  # Campo para ordenação
 
 class DetailedDataRow(BaseModel):
     Data: str
@@ -178,6 +181,7 @@ class DetailedDataResponse(BaseModel):
     total_rows: int
     summary: Dict[str, Any]
     cache_info: Optional[Dict[str, Any]] = None
+    pagination: Optional[Dict[str, Any]] = None
 
 def get_project_name(tablename: str) -> str:
     """Determina o nome do projeto baseado na tabela"""
@@ -1092,13 +1096,32 @@ async def get_detailed_data(
 ):
     """Endpoint para buscar dados detalhados com métricas agregadas e cache de 1 hora"""
     
+    # Validar limites de paginação primeiro
+    limit = min(request.limit or 1000, 5000)  # Máximo 5000 registros
+    offset = max(request.offset or 0, 0)      # Offset não pode ser negativo
+    
+    if request.limit and request.limit > 5000:
+        print(f"⚠️ Limite muito alto ({request.limit}), usando máximo de 5000")
+    if request.offset and request.offset < 0:
+        print(f"⚠️ Offset negativo ({request.offset}), usando 0")
+    
+    # Validar campo de ordenação
+    valid_order_fields = ['Pedidos', 'Receita', 'Sessoes', 'Adicoes_ao_Carrinho', 'Data', 'Hora']
+    order_by = request.order_by or 'Pedidos'
+    if order_by not in valid_order_fields:
+        order_by = 'Pedidos'
+        print(f"⚠️ Campo de ordenação '{request.order_by}' inválido, usando 'Pedidos'")
+    
     # Verificar cache primeiro
     cache_params = {
         'email': token.email, 
         'start_date': request.start_date, 
         'end_date': request.end_date, 
         'table_name': request.table_name,
-        'attribution_model': request.attribution_model
+        'attribution_model': request.attribution_model,
+        'limit': limit,
+        'offset': offset,
+        'order_by': order_by
     }
     
     cached_data = detailed_data_cache.get(**cache_params)
@@ -1107,7 +1130,13 @@ async def get_detailed_data(
             data=cached_data['data'], 
             total_rows=cached_data['total_rows'], 
             summary=cached_data['summary'],
-            cache_info={'source': 'cache', 'cached_at': cached_data.get('cached_at'), 'ttl_hours': 1}
+            cache_info={'source': 'cache', 'cached_at': cached_data.get('cached_at'), 'ttl_hours': 4},
+            pagination={
+                'limit': limit,
+                'offset': offset,
+                'order_by': order_by,
+                'has_more': len(cached_data['data']) == limit
+            }
         )
     
     client = get_bigquery_client()
@@ -1180,33 +1209,86 @@ async def get_detailed_data(
         # Construir condição de data
         date_condition = f"event_date BETWEEN '{request.start_date}' AND '{request.end_date}'"
         
-        # Query principal
+        # Query principal com UNION para separar diferentes tipos de eventos
         query = f"""
-        SELECT
-            event_date AS Data,
-            extract(hour from created_at) as Hora,
-            source as Origem,
-            medium as `Midia`, 
-            campaign as Campanha,
-            page_location as `Pagina_de_Entrada`,
-            content as `Conteudo`,
-            coalesce(discount_code, 'Sem Cupom') as `Cupom`,
-            traffic_category as `Cluster`,
-
-            COUNTIF(event_name = 'session') as `Sessoes`,
-            COUNTIF(event_name = 'add_to_cart') as `Adicoes_ao_Carrinho`,
-            COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' then transaction_id end) as `Pedidos`,
-            SUM(CASE WHEN event_name = '{attribution_model}' then value - total_discounts + shipping_value end) as `Receita`,
-            COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN transaction_id END) as `Pedidos_Pagos`,
-            SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN value - total_discounts + shipping_value ELSE 0 END) as `Receita_Paga`
-
-        FROM `{project_name}.dbt_join.{tablename}_events_long`
-        WHERE {date_condition}
-        GROUP BY ALL
-        ORDER BY Pedidos DESC
+        WITH session_data AS (
+            SELECT
+                event_date AS Data,
+                extract(hour from created_at) as Hora,
+                source as Origem,
+                medium as `Midia`, 
+                campaign as Campanha,
+                page_location as `Pagina_de_Entrada`,
+                content as `Conteudo`,
+                coalesce(discount_code, 'Sem Cupom') as `Cupom`,
+                traffic_category as `Cluster`,
+                COUNT(*) as `Sessoes`,
+                0 as `Adicoes_ao_Carrinho`,
+                0 as `Pedidos`,
+                0.0 as `Receita`,
+                0 as `Pedidos_Pagos`,
+                0.0 as `Receita_Paga`
+            FROM `{project_name}.dbt_join.{tablename}_events_long`
+            WHERE {date_condition} AND event_name = 'session'
+            GROUP BY event_date, Hora, source, medium, campaign, page_location, content, discount_code, traffic_category
+        ),
+        add_to_cart_data AS (
+            SELECT
+                event_date AS Data,
+                extract(hour from created_at) as Hora,
+                source as Origem,
+                medium as `Midia`, 
+                campaign as Campanha,
+                page_location as `Pagina_de_Entrada`,
+                content as `Conteudo`,
+                coalesce(discount_code, 'Sem Cupom') as `Cupom`,
+                traffic_category as `Cluster`,
+                0 as `Sessoes`,
+                COUNT(*) as `Adicoes_ao_Carrinho`,
+                0 as `Pedidos`,
+                0.0 as `Receita`,
+                0 as `Pedidos_Pagos`,
+                0.0 as `Receita_Paga`
+            FROM `{project_name}.dbt_join.{tablename}_events_long`
+            WHERE {date_condition} AND event_name = 'add_to_cart'
+            GROUP BY event_date, Hora, source, medium, campaign, page_location, content, discount_code, traffic_category
+        ),
+        purchase_data AS (
+            SELECT
+                event_date AS Data,
+                extract(hour from created_at) as Hora,
+                source as Origem,
+                medium as `Midia`, 
+                campaign as Campanha,
+                page_location as `Pagina_de_Entrada`,
+                content as `Conteudo`,
+                coalesce(discount_code, 'Sem Cupom') as `Cupom`,
+                traffic_category as `Cluster`,
+                0 as `Sessoes`,
+                0 as `Adicoes_ao_Carrinho`,
+                COUNT(DISTINCT transaction_id) as `Pedidos`,
+                SUM(value + shipping_value) as `Receita`,
+                COUNT(DISTINCT CASE WHEN status in ('paid', 'authorized') THEN transaction_id END) as `Pedidos_Pagos`,
+                SUM(CASE WHEN status in ('paid', 'authorized') THEN value + shipping_value ELSE 0 END) as `Receita_Paga`
+            FROM `{project_name}.dbt_join.{tablename}_events_long`
+            WHERE {date_condition} AND event_name = '{attribution_model}'
+            GROUP BY event_date, Hora, source, medium, campaign, page_location, content, discount_code, traffic_category
+        )
+        SELECT * FROM (
+            SELECT * FROM session_data
+            UNION ALL
+            SELECT * FROM add_to_cart_data
+            UNION ALL
+            SELECT * FROM purchase_data
+        )
+        ORDER BY {order_by} DESC
+        LIMIT {limit} OFFSET {offset}
         """
         
-        print(f"Executando query de dados detalhados: {query}")
+        print(f"Executando query de dados detalhados com paginação: limit={limit}, offset={offset}, order_by={order_by}")
+        print(f"Query length: {len(query)}")
+        print(f"Query contains 'WITH session_data': {'WITH session_data' in query}")
+        print(f"Query contains 'UNION ALL': {'UNION ALL' in query}")
         
         # Executar query
         result = client.query(query)
@@ -1263,7 +1345,10 @@ async def get_detailed_data(
                 'start_date': request.start_date,
                 'end_date': request.end_date,
                 'table_name': request.table_name,
-                'attribution_model': request.attribution_model
+                'attribution_model': request.attribution_model,
+                'limit': limit,
+                'offset': offset,
+                'order_by': order_by
             },
             token.email
         )
@@ -1283,7 +1368,13 @@ async def get_detailed_data(
             data=data,
             total_rows=len(data),
             summary=summary,
-            cache_info={'source': 'database', 'cached_at': response_data['cached_at'], 'ttl_hours': 1}
+            cache_info={'source': 'database', 'cached_at': response_data['cached_at'], 'ttl_hours': 4},
+            pagination={
+                'limit': limit,
+                'offset': offset,
+                'order_by': order_by,
+                'has_more': len(data) == limit
+            }
         )
         
     except Exception as e:
@@ -1348,6 +1439,9 @@ async def execute_last_request(endpoint: str, request_data: Dict[str, Any], toke
             end_date: str
             attribution_model: Optional[str] = "purchase"
             table_name: Optional[str] = None
+            limit: Optional[int] = 1000
+            offset: Optional[int] = 0
+            order_by: Optional[str] = "Pedidos"
         
         temp_request = TempRequest(**request_data)
         return await get_detailed_data(temp_request, token)
