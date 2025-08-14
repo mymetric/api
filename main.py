@@ -16,6 +16,9 @@ from utils import verify_token, TokenData, get_bigquery_client, create_access_to
 from metrics import metrics_router
 from zapi_service import zapi_service
 
+# Importar métodos customizados
+from custom_methods.havaianas_items_scoring import havaianas_router
+
 # Carregar variáveis de ambiente
 load_dotenv()
 
@@ -36,6 +39,9 @@ app.add_middleware(
 
 # Incluir router de métricas
 app.include_router(metrics_router)
+
+# Incluir router de métodos customizados
+app.include_router(havaianas_router)
 
 # Configurar autenticação
 security = HTTPBearer()
