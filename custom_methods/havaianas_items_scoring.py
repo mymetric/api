@@ -105,8 +105,7 @@ async def havaianas_items_scoring(
             "  transactions,",
             "  purchase_revenue",
             f"FROM `bq-mktbr.dbt_aggregated.{tablename}_item_scoring`",
-            "ORDER BY event_date DESC, item_id",
-            "LIMIT 1000"
+            "ORDER BY event_date DESC, item_id"
         ]
 
         query_parameters = []
