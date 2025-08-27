@@ -183,6 +183,29 @@ class DetailedDataResponse(BaseModel):
     cache_info: Optional[Dict[str, Any]] = None
     pagination: Optional[Dict[str, Any]] = None
 
+# Modelos para product trend
+class ProductTrendRequest(BaseModel):
+    table_name: str
+    limit: Optional[int] = 100
+
+class ProductTrendRow(BaseModel):
+    item_id: str
+    item_name: str
+    purchases_week_1: int
+    purchases_week_2: int
+    purchases_week_3: int
+    purchases_week_4: int
+    percent_change_w1_w2: float
+    percent_change_w2_w3: float
+    percent_change_w3_w4: float
+    trend_status: str
+    trend_consistency: str
+
+class ProductTrendResponse(BaseModel):
+    data: List[ProductTrendRow]
+    total_rows: int
+    summary: Dict[str, Any]
+
 def get_project_name(tablename: str) -> str:
     """Determina o nome do projeto baseado na tabela"""
     # Para tabelas específicas, usar projeto diferente
@@ -1384,6 +1407,146 @@ async def get_detailed_data(
             detail=f"Erro interno do servidor: {str(e)}"
         )
 
+@metrics_router.post("/product-trend", response_model=ProductTrendResponse)
+async def get_product_trend(
+    request: ProductTrendRequest,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para buscar dados de tendência de produtos"""
+    
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        # Buscar informações do usuário
+        user_query = f"""
+        SELECT tablename, access_control
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        
+        user_result = client.query(user_query, job_config=job_config)
+        user_data = list(user_result.result())
+        
+        if not user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário não encontrado"
+            )
+        
+        user_tablename = user_data[0].tablename
+        
+        # Determinar qual tabela usar
+        if user_tablename == 'all':
+            # Usuário tem acesso a todas as tabelas
+            tablename = request.table_name
+            print(f"🔓 Usuário com acesso total acessando tabela: {tablename}")
+        else:
+            # Usuário tem acesso limitado a uma tabela específica
+            if request.table_name != user_tablename:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
+                )
+            tablename = request.table_name
+            print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
+
+        # Determinar projeto
+        project_name = get_project_name(tablename)
+        
+        # Query para buscar dados de tendência de produtos
+        query = f"""
+        SELECT
+            item_id,
+            item_name,
+            purchases_week_1,
+            purchases_week_2,
+            purchases_week_3,
+            purchases_week_4,
+            percent_change_w1_w2,
+            percent_change_w2_w3,
+            percent_change_w3_w4,
+            trend_status,
+            trend_consistency
+        FROM `{project_name}.dbt_aggregated.{tablename}_product_trend`
+        ORDER BY purchases_week_4 DESC
+        LIMIT {request.limit}
+        """
+        
+        print(f"Executando query product-trend: {query}")
+        
+        # Executar query
+        result = client.query(query)
+        rows = list(result.result())
+        
+        # Converter para formato de resposta
+        data = []
+        total_products = 0
+        total_purchases_w4 = 0
+        
+        for row in rows:
+            data_row = ProductTrendRow(
+                item_id=str(row.item_id) if row.item_id else "",
+                item_name=str(row.item_name) if row.item_name else "",
+                purchases_week_1=int(row.purchases_week_1) if row.purchases_week_1 is not None else 0,
+                purchases_week_2=int(row.purchases_week_2) if row.purchases_week_2 is not None else 0,
+                purchases_week_3=int(row.purchases_week_3) if row.purchases_week_3 is not None else 0,
+                purchases_week_4=int(row.purchases_week_4) if row.purchases_week_4 is not None else 0,
+                percent_change_w1_w2=float(row.percent_change_w1_w2) if row.percent_change_w1_w2 is not None else 0.0,
+                percent_change_w2_w3=float(row.percent_change_w2_w3) if row.percent_change_w2_w3 is not None else 0.0,
+                percent_change_w3_w4=float(row.percent_change_w3_w4) if row.percent_change_w3_w4 is not None else 0.0,
+                trend_status=str(row.trend_status) if row.trend_status else "",
+                trend_consistency=str(row.trend_consistency) if row.trend_consistency else ""
+            )
+            data.append(data_row)
+            
+            # Calcular totais
+            total_products += 1
+            total_purchases_w4 += data_row.purchases_week_4
+        
+        # Criar resumo
+        summary = {
+            "total_products": total_products,
+            "total_purchases_week_4": total_purchases_w4,
+            "average_purchases_week_4": total_purchases_w4 / total_products if total_products > 0 else 0,
+            "table_name": tablename,
+            "project_name": project_name,
+            "limit_applied": request.limit
+        }
+        
+        # Salvar último request
+        last_request_manager.save_last_request(
+            'product-trend',
+            {
+                'table_name': request.table_name,
+                'limit': request.limit
+            },
+            token.email
+        )
+        
+        return ProductTrendResponse(
+            data=data,
+            total_rows=len(data),
+            summary=summary
+        )
+        
+    except Exception as e:
+        print(f"Erro ao buscar dados de tendência de produtos: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
 async def execute_last_request(endpoint: str, request_data: Dict[str, Any], token: TokenData):
     """Função auxiliar para executar a consulta baseada no último request"""
     
@@ -1445,6 +1608,15 @@ async def execute_last_request(endpoint: str, request_data: Dict[str, Any], toke
         
         temp_request = TempRequest(**request_data)
         return await get_detailed_data(temp_request, token)
+    
+    elif endpoint == "product-trend":
+        from pydantic import BaseModel
+        class TempRequest(BaseModel):
+            table_name: str
+            limit: Optional[int] = 100
+        
+        temp_request = TempRequest(**request_data)
+        return await get_product_trend(temp_request, token)
     
     else:
         raise HTTPException(
