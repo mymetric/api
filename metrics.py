@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import os
 
 from utils import verify_token, TokenData, get_bigquery_client
-from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, last_request_manager
+from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, product_trend_cache, last_request_manager
 
 # Router para métricas
 metrics_router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -187,6 +187,8 @@ class DetailedDataResponse(BaseModel):
 class ProductTrendRequest(BaseModel):
     table_name: str
     limit: Optional[int] = 100
+    offset: Optional[int] = 0
+    order_by: Optional[str] = "purchases_week_4"
 
 class ProductTrendRow(BaseModel):
     item_id: str
@@ -205,6 +207,8 @@ class ProductTrendResponse(BaseModel):
     data: List[ProductTrendRow]
     total_rows: int
     summary: Dict[str, Any]
+    pagination: Optional[Dict[str, Any]] = None
+    cache_info: Optional[Dict[str, Any]] = None
 
 def get_project_name(tablename: str) -> str:
     """Determina o nome do projeto baseado na tabela"""
@@ -1412,7 +1416,54 @@ async def get_product_trend(
     request: ProductTrendRequest,
     token: TokenData = Depends(verify_token)
 ):
-    """Endpoint para buscar dados de tendência de produtos"""
+    """Endpoint para buscar dados de tendência de produtos com paginação"""
+    
+    # Validar limites de paginação
+    limit = min(request.limit or 100, 1000)  # Máximo 1000 registros
+    offset = max(request.offset or 0, 0)      # Offset não pode ser negativo
+    
+    if request.limit and request.limit > 1000:
+        print(f"⚠️ Limite muito alto ({request.limit}), usando máximo de 1000")
+    if request.offset and request.offset < 0:
+        print(f"⚠️ Offset negativo ({request.offset}), usando 0")
+    
+    # Validar campo de ordenação
+    valid_order_fields = ['purchases_week_4', 'purchases_week_3', 'purchases_week_2', 'purchases_week_1', 
+                         'percent_change_w3_w4', 'percent_change_w2_w3', 'percent_change_w1_w2', 
+                         'item_name', 'trend_status']
+    order_by = request.order_by or 'purchases_week_4'
+    if order_by not in valid_order_fields:
+        order_by = 'purchases_week_4'
+        print(f"⚠️ Campo de ordenação '{request.order_by}' inválido, usando 'purchases_week_4'")
+    
+    # Parâmetros para o cache
+    cache_params = {
+        'email': token.email,
+        'table_name': request.table_name,
+        'limit': limit,
+        'offset': offset,
+        'order_by': order_by
+    }
+    
+    # Tentar buscar do cache primeiro
+    cached_data = product_trend_cache.get(**cache_params)
+    if cached_data:
+        return ProductTrendResponse(
+            data=cached_data['data'],
+            total_rows=cached_data['total_rows'],
+            summary=cached_data['summary'],
+            cache_info={
+                'source': 'cache',
+                'cached_at': cached_data.get('cached_at'),
+                'ttl_hours': 2
+            },
+            pagination={
+                'limit': limit,
+                'offset': offset,
+                'order_by': order_by,
+                'has_more': len(cached_data['data']) == limit
+            }
+        )
     
     client = get_bigquery_client()
     if not client:
@@ -1464,7 +1515,7 @@ async def get_product_trend(
         # Determinar projeto
         project_name = get_project_name(tablename)
         
-        # Query para buscar dados de tendência de produtos
+        # Query para buscar dados de tendência de produtos com paginação
         query = f"""
         SELECT
             item_id,
@@ -1479,8 +1530,9 @@ async def get_product_trend(
             trend_status,
             trend_consistency
         FROM `{project_name}.dbt_aggregated.{tablename}_product_trend`
-        ORDER BY purchases_week_4 DESC
-        LIMIT {request.limit}
+        ORDER BY {order_by} DESC
+        LIMIT {limit}
+        OFFSET {offset}
         """
         
         print(f"Executando query product-trend: {query}")
@@ -1521,7 +1573,17 @@ async def get_product_trend(
             "average_purchases_week_4": total_purchases_w4 / total_products if total_products > 0 else 0,
             "table_name": tablename,
             "project_name": project_name,
-            "limit_applied": request.limit
+            "limit_applied": limit,
+            "offset_applied": offset,
+            "order_by_applied": order_by
+        }
+        
+        # Preparar dados para cache
+        response_data = {
+            'data': [row.dict() for row in data],
+            'total_rows': len(data),
+            'summary': summary,
+            'cached_at': datetime.now().isoformat()
         }
         
         # Salvar último request
@@ -1529,15 +1591,31 @@ async def get_product_trend(
             'product-trend',
             {
                 'table_name': request.table_name,
-                'limit': request.limit
+                'limit': limit,
+                'offset': offset,
+                'order_by': order_by
             },
             token.email
         )
         
+        # Armazenar no cache
+        product_trend_cache.set(response_data, **cache_params)
+        
         return ProductTrendResponse(
             data=data,
             total_rows=len(data),
-            summary=summary
+            summary=summary,
+            cache_info={
+                'source': 'database',
+                'cached_at': response_data['cached_at'],
+                'ttl_hours': 2
+            },
+            pagination={
+                'limit': limit,
+                'offset': offset,
+                'order_by': order_by,
+                'has_more': len(data) == limit
+            }
         )
         
     except Exception as e:
@@ -1614,6 +1692,8 @@ async def execute_last_request(endpoint: str, request_data: Dict[str, Any], toke
         class TempRequest(BaseModel):
             table_name: str
             limit: Optional[int] = 100
+            offset: Optional[int] = 0
+            order_by: Optional[str] = "purchases_week_4"
         
         temp_request = TempRequest(**request_data)
         return await get_product_trend(temp_request, token)
@@ -1768,6 +1848,7 @@ async def flush_cache(token: TokenData = Depends(verify_token)):
         daily_metrics_stats = daily_metrics_cache.flush()
         orders_stats = orders_cache.flush()
         detailed_data_stats = detailed_data_cache.flush()
+        product_trend_stats = product_trend_cache.flush()
         
         return {
             "message": "Todos os caches limpos com sucesso",
@@ -1775,7 +1856,8 @@ async def flush_cache(token: TokenData = Depends(verify_token)):
                 "basic_data_cache": basic_stats,
                 "daily_metrics_cache": daily_metrics_stats,
                 "orders_cache": orders_stats,
-                "detailed_data_cache": detailed_data_stats
+                "detailed_data_cache": detailed_data_stats,
+                "product_trend_cache": product_trend_stats
             }
         }
         
@@ -1818,6 +1900,7 @@ async def flush_expired_cache(token: TokenData = Depends(verify_token)):
         daily_metrics_stats = daily_metrics_cache.flush_expired()
         orders_stats = orders_cache.flush_expired()
         detailed_data_stats = detailed_data_cache.flush_expired()
+        product_trend_stats = product_trend_cache.flush_expired()
         
         return {
             "message": "Entradas expiradas removidas com sucesso de todos os caches",
@@ -1825,7 +1908,8 @@ async def flush_expired_cache(token: TokenData = Depends(verify_token)):
                 "basic_data_cache": basic_stats,
                 "daily_metrics_cache": daily_metrics_stats,
                 "orders_cache": orders_stats,
-                "detailed_data_cache": detailed_data_stats
+                "detailed_data_cache": detailed_data_stats,
+                "product_trend_cache": product_trend_stats
             }
         }
         
@@ -1868,6 +1952,7 @@ async def get_cache_stats(token: TokenData = Depends(verify_token)):
         daily_metrics_stats = daily_metrics_cache.get_stats()
         orders_stats = orders_cache.get_stats()
         detailed_data_stats = detailed_data_cache.get_stats()
+        product_trend_stats = product_trend_cache.get_stats()
         
         return {
             "message": "Estatísticas de todos os caches",
@@ -1875,7 +1960,8 @@ async def get_cache_stats(token: TokenData = Depends(verify_token)):
                 "basic_data_cache": basic_stats,
                 "daily_metrics_cache": daily_metrics_stats,
                 "orders_cache": orders_stats,
-                "detailed_data_cache": detailed_data_stats
+                "detailed_data_cache": detailed_data_stats,
+                "product_trend_cache": product_trend_stats
             }
         }
         
