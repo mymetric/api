@@ -202,6 +202,9 @@ class ProductTrendRow(BaseModel):
     percent_change_w3_w4: float
     trend_status: str
     trend_consistency: str
+    country: Optional[str] = None
+    region: Optional[str] = None
+    city: Optional[str] = None
 
 class ProductTrendResponse(BaseModel):
     data: List[ProductTrendRow]
@@ -1430,7 +1433,7 @@ async def get_product_trend(
     # Validar campo de ordenação
     valid_order_fields = ['purchases_week_4', 'purchases_week_3', 'purchases_week_2', 'purchases_week_1', 
                          'percent_change_w3_w4', 'percent_change_w2_w3', 'percent_change_w1_w2', 
-                         'item_name', 'trend_status']
+                         'item_name', 'trend_status', 'country', 'region', 'city']
     order_by = request.order_by or 'purchases_week_4'
     if order_by not in valid_order_fields:
         order_by = 'purchases_week_4'
@@ -1528,7 +1531,10 @@ async def get_product_trend(
             percent_change_w2_w3,
             percent_change_w3_w4,
             trend_status,
-            trend_consistency
+            trend_consistency,
+            country,
+            region,
+            city
         FROM `{project_name}.dbt_aggregated.{tablename}_product_trend`
         ORDER BY {order_by} DESC
         LIMIT {limit}
@@ -1558,7 +1564,10 @@ async def get_product_trend(
                 percent_change_w2_w3=float(row.percent_change_w2_w3) if row.percent_change_w2_w3 is not None else 0.0,
                 percent_change_w3_w4=float(row.percent_change_w3_w4) if row.percent_change_w3_w4 is not None else 0.0,
                 trend_status=str(row.trend_status) if row.trend_status else "",
-                trend_consistency=str(row.trend_consistency) if row.trend_consistency else ""
+                trend_consistency=str(row.trend_consistency) if row.trend_consistency else "",
+                country=str(row.country) if row.country else None,
+                region=str(row.region) if row.region else None,
+                city=str(row.city) if row.city else None
             )
             data.append(data_row)
             
