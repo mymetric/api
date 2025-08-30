@@ -137,6 +137,7 @@ daily_metrics_cache = CacheManager(ttl_hours=1)
 orders_cache = CacheManager(ttl_hours=1)
 detailed_data_cache = CacheManager(ttl_hours=4)
 product_trend_cache = CacheManager(ttl_hours=2)
+ads_campaigns_results_cache = CacheManager(ttl_hours=2)
 
 # Sistema para salvar último request
 import os

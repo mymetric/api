@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import os
 
 from utils import verify_token, TokenData, get_bigquery_client
-from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, product_trend_cache, last_request_manager
+from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, product_trend_cache, ads_campaigns_results_cache, last_request_manager
 
 # Router para métricas
 metrics_router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -208,6 +208,35 @@ class ProductTrendResponse(BaseModel):
     total_rows: int
     summary: Dict[str, Any]
     pagination: Optional[Dict[str, Any]] = None
+    cache_info: Optional[Dict[str, Any]] = None
+
+# Novos modelos para ads campaigns results
+class AdsCampaignsResultsRequest(BaseModel):
+    start_date: str
+    end_date: str
+    table_name: Optional[str] = None
+
+class AdsCampaignsResultsRow(BaseModel):
+    platform: str
+    campaign_name: str
+    date: str
+    cost: float
+    impressions: int
+    clicks: int
+    leads: int
+    transactions: int
+    revenue: float
+    transactions_first: int
+    revenue_first: float
+    transactions_origin_stack: int
+    revenue_origin_stack: float
+    transactions_first_origin_stack: int
+    revenue_first_origin_stack: float
+
+class AdsCampaignsResultsResponse(BaseModel):
+    data: List[AdsCampaignsResultsRow]
+    total_rows: int
+    summary: Dict[str, Any]
     cache_info: Optional[Dict[str, Any]] = None
 
 def get_project_name(tablename: str) -> str:
@@ -1625,6 +1654,228 @@ async def get_product_trend(
             detail=f"Erro interno do servidor: {str(e)}"
         )
 
+@metrics_router.post("/ads-campaigns-results", response_model=AdsCampaignsResultsResponse)
+async def get_ads_campaigns_results(
+    request: AdsCampaignsResultsRequest,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para buscar dados de resultados de campanhas publicitárias com cache de 2 horas"""
+    
+    # Parâmetros para o cache
+    cache_params = {
+        'email': token.email,
+        'start_date': request.start_date,
+        'end_date': request.end_date,
+        'table_name': request.table_name
+    }
+    
+    # Tentar buscar do cache primeiro
+    cached_data = ads_campaigns_results_cache.get(**cache_params)
+    if cached_data:
+        return AdsCampaignsResultsResponse(
+            data=cached_data['data'],
+            total_rows=cached_data['total_rows'],
+            summary=cached_data['summary'],
+            cache_info={
+                'source': 'cache',
+                'cached_at': cached_data.get('cached_at'),
+                'ttl_hours': 2
+            }
+        )
+    
+    # Se não estiver no cache, buscar do BigQuery
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        # Buscar informações do usuário
+        user_query = f"""
+        SELECT tablename, access_control
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        
+        user_result = client.query(user_query, job_config=job_config)
+        user_data = list(user_result.result())
+        
+        if not user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário não encontrado"
+            )
+        
+        user_tablename = user_data[0].tablename
+        access_control = user_data[0].access_control
+        
+        # Determinar qual tabela usar
+        if user_tablename == 'all':
+            # Usuário tem acesso a todas as tabelas
+            if request.table_name:
+                # Usuário escolheu uma tabela específica
+                tablename = request.table_name
+                print(f"🔓 Usuário com acesso total escolheu tabela: {tablename}")
+            else:
+                # Usar tabela padrão (constance)
+                tablename = 'constance'
+                print(f"🔓 Usuário com acesso total usando tabela padrão: {tablename}")
+        else:
+            # Usuário tem acesso limitado a uma tabela específica
+            if request.table_name and request.table_name != user_tablename:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
+                )
+            tablename = user_tablename
+            print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
+
+        # Determinar projeto
+        project_name = get_project_name(tablename)
+        
+        # Construir query baseada na SQL fornecida
+        start_date_str = request.start_date
+        end_date_str = request.end_date
+        
+        query = f"""
+        SELECT
+            platform,
+            campaign_name,
+            date,
+            sum(cost) cost,
+            sum(impressions) impressions,
+            sum(clicks) clicks,
+            sum(leads) Leads,
+            sum(transactions) transactions,
+            sum(revenue) revenue,
+            sum(first_transaction) transactions_first,
+            sum(first_revenue) revenue_first,
+            sum(fsm_transactions) transactions_origin_stack,
+            sum(fsm_revenue) revenue_origin_stack,
+            sum(fsm_first_transaction) transactions_first_origin_stack,
+            sum(fsm_first_revenue) revenue_first_origin_stack
+        FROM `{project_name}.dbt_join.{tablename}_ads_campaigns_results`
+        WHERE date BETWEEN '{start_date_str}' AND '{end_date_str}'
+        GROUP BY ALL
+        ORDER BY cost DESC
+        """
+        
+        print(f"Executando query ads-campaigns-results: {query}")
+        
+        # Executar query
+        result = client.query(query)
+        rows = list(result.result())
+        
+        # Converter para formato de resposta
+        data = []
+        total_cost = 0
+        total_revenue = 0
+        total_impressions = 0
+        total_clicks = 0
+        total_leads = 0
+        total_transactions = 0
+        
+        for row in rows:
+            data_row = AdsCampaignsResultsRow(
+                platform=str(row.platform) if row.platform else "",
+                campaign_name=str(row.campaign_name) if row.campaign_name else "",
+                date=str(row.date) if row.date else "",
+                cost=float(row.cost) if row.cost else 0.0,
+                impressions=int(row.impressions) if row.impressions else 0,
+                clicks=int(row.clicks) if row.clicks else 0,
+                leads=int(row.Leads) if row.Leads else 0,
+                transactions=int(row.transactions) if row.transactions else 0,
+                revenue=float(row.revenue) if row.revenue else 0.0,
+                transactions_first=int(row.transactions_first) if row.transactions_first else 0,
+                revenue_first=float(row.revenue_first) if row.revenue_first else 0.0,
+                transactions_origin_stack=int(row.transactions_origin_stack) if row.transactions_origin_stack else 0,
+                revenue_origin_stack=float(row.revenue_origin_stack) if row.revenue_origin_stack else 0.0,
+                transactions_first_origin_stack=int(row.transactions_first_origin_stack) if row.transactions_first_origin_stack else 0,
+                revenue_first_origin_stack=float(row.revenue_first_origin_stack) if row.revenue_first_origin_stack else 0.0
+            )
+            data.append(data_row)
+            
+            # Calcular totais
+            total_cost += data_row.cost
+            total_revenue += data_row.revenue
+            total_impressions += data_row.impressions
+            total_clicks += data_row.clicks
+            total_leads += data_row.leads
+            total_transactions += data_row.transactions
+        
+        # Calcular métricas
+        ctr = (total_clicks / total_impressions * 100) if total_impressions > 0 else 0
+        cpm = (total_cost / total_impressions * 1000) if total_impressions > 0 else 0
+        cpc = (total_cost / total_clicks) if total_clicks > 0 else 0
+        conversion_rate = (total_transactions / total_clicks * 100) if total_clicks > 0 else 0
+        roas = (total_revenue / total_cost) if total_cost > 0 else 0
+        
+        # Criar resumo
+        summary = {
+            "total_cost": total_cost,
+            "total_revenue": total_revenue,
+            "total_impressions": total_impressions,
+            "total_clicks": total_clicks,
+            "total_leads": total_leads,
+            "total_transactions": total_transactions,
+            "ctr": ctr,  # Click Through Rate
+            "cpm": cpm,  # Cost Per Mille (1000 impressions)
+            "cpc": cpc,  # Cost Per Click
+            "conversion_rate": conversion_rate,
+            "roas": roas,  # Return on Ad Spend
+            "periodo": f"{start_date_str} a {end_date_str}",
+            "tablename": tablename,
+            "user_access": "all" if user_tablename == 'all' else "limited"
+        }
+        
+        # Preparar resposta
+        response_data = {
+            'data': [row.dict() for row in data],
+            'total_rows': len(data),
+            'summary': summary,
+            'cached_at': datetime.now().isoformat()
+        }
+        
+        # Salvar último request
+        last_request_manager.save_last_request(
+            'ads-campaigns-results',
+            {
+                'start_date': request.start_date,
+                'end_date': request.end_date,
+                'table_name': request.table_name
+            },
+            token.email
+        )
+        
+        # Armazenar no cache
+        ads_campaigns_results_cache.set(response_data, **cache_params)
+        
+        return AdsCampaignsResultsResponse(
+            data=data,
+            total_rows=len(data),
+            summary=summary,
+            cache_info={
+                'source': 'database',
+                'cached_at': response_data['cached_at'],
+                'ttl_hours': 2
+            }
+        )
+        
+    except Exception as e:
+        print(f"Erro ao buscar dados de campanhas publicitárias: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
 async def execute_last_request(endpoint: str, request_data: Dict[str, Any], token: TokenData):
     """Função auxiliar para executar a consulta baseada no último request"""
     
@@ -1697,6 +1948,16 @@ async def execute_last_request(endpoint: str, request_data: Dict[str, Any], toke
         
         temp_request = TempRequest(**request_data)
         return await get_product_trend(temp_request, token)
+    
+    elif endpoint == "ads-campaigns-results":
+        from pydantic import BaseModel
+        class TempRequest(BaseModel):
+            start_date: str
+            end_date: str
+            table_name: Optional[str] = None
+        
+        temp_request = TempRequest(**request_data)
+        return await get_ads_campaigns_results(temp_request, token)
     
     else:
         raise HTTPException(
@@ -1849,6 +2110,7 @@ async def flush_cache(token: TokenData = Depends(verify_token)):
         orders_stats = orders_cache.flush()
         detailed_data_stats = detailed_data_cache.flush()
         product_trend_stats = product_trend_cache.flush()
+        ads_campaigns_results_stats = ads_campaigns_results_cache.flush()
         
         return {
             "message": "Todos os caches limpos com sucesso",
@@ -1857,7 +2119,8 @@ async def flush_cache(token: TokenData = Depends(verify_token)):
                 "daily_metrics_cache": daily_metrics_stats,
                 "orders_cache": orders_stats,
                 "detailed_data_cache": detailed_data_stats,
-                "product_trend_cache": product_trend_stats
+                "product_trend_cache": product_trend_stats,
+                "ads_campaigns_results_cache": ads_campaigns_results_stats
             }
         }
         
@@ -1901,6 +2164,7 @@ async def flush_expired_cache(token: TokenData = Depends(verify_token)):
         orders_stats = orders_cache.flush_expired()
         detailed_data_stats = detailed_data_cache.flush_expired()
         product_trend_stats = product_trend_cache.flush_expired()
+        ads_campaigns_results_stats = ads_campaigns_results_cache.flush_expired()
         
         return {
             "message": "Entradas expiradas removidas com sucesso de todos os caches",
@@ -1909,7 +2173,8 @@ async def flush_expired_cache(token: TokenData = Depends(verify_token)):
                 "daily_metrics_cache": daily_metrics_stats,
                 "orders_cache": orders_stats,
                 "detailed_data_cache": detailed_data_stats,
-                "product_trend_cache": product_trend_stats
+                "product_trend_cache": product_trend_stats,
+                "ads_campaigns_results_cache": ads_campaigns_results_stats
             }
         }
         
@@ -1953,6 +2218,7 @@ async def get_cache_stats(token: TokenData = Depends(verify_token)):
         orders_stats = orders_cache.get_stats()
         detailed_data_stats = detailed_data_cache.get_stats()
         product_trend_stats = product_trend_cache.get_stats()
+        ads_campaigns_results_stats = ads_campaigns_results_cache.get_stats()
         
         return {
             "message": "Estatísticas de todos os caches",
@@ -1961,7 +2227,8 @@ async def get_cache_stats(token: TokenData = Depends(verify_token)):
                 "daily_metrics_cache": daily_metrics_stats,
                 "orders_cache": orders_stats,
                 "detailed_data_cache": detailed_data_stats,
-                "product_trend_cache": product_trend_stats
+                "product_trend_cache": product_trend_stats,
+                "ads_campaigns_results_cache": ads_campaigns_results_stats
             }
         }
         
