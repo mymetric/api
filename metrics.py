@@ -242,7 +242,7 @@ class AdsCampaignsResultsResponse(BaseModel):
 # Novos modelos para realtime purchases items
 class RealtimeRequest(BaseModel):
     table_name: Optional[str] = None
-    limit: Optional[int] = 100
+    limit: Optional[int] = None
 
 class RealtimeRow(BaseModel):
     event_timestamp: str
@@ -1909,8 +1909,8 @@ async def get_realtime_purchases(
 ):
     """Endpoint para buscar dados de compras de itens em tempo real com cache de 15 minutos"""
     
-    # Validar limite
-    limit = min(request.limit or 100, 1000)  # Máximo 1000 registros para realtime
+    # Usar limite se fornecido, senão buscar todos os dados
+    limit = request.limit
     
     # Parâmetros para o cache
     cache_params = {
@@ -1992,6 +1992,7 @@ async def get_realtime_purchases(
         project_name = get_project_name(tablename)
         
         # Construir query realtime
+        limit_clause = f"LIMIT {limit}" if limit else ""
         query = f"""
         SELECT
             event_timestamp,
@@ -2010,7 +2011,7 @@ async def get_realtime_purchases(
         FROM
             `{project_name}.dbt_join.{tablename}_purchases_items_sessions_realtime`
         ORDER BY event_timestamp DESC
-        LIMIT {limit}
+        {limit_clause}
         """
         
         print(f"Executando query realtime: {query}")
@@ -2202,7 +2203,7 @@ async def execute_last_request(endpoint: str, request_data: Dict[str, Any], toke
         from pydantic import BaseModel
         class TempRequest(BaseModel):
             table_name: Optional[str] = None
-            limit: Optional[int] = 100
+            limit: Optional[int] = None
         
         temp_request = TempRequest(**request_data)
         return await get_realtime_purchases(temp_request, token)
