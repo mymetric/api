@@ -138,6 +138,7 @@ orders_cache = CacheManager(ttl_hours=1)
 detailed_data_cache = CacheManager(ttl_hours=4)
 product_trend_cache = CacheManager(ttl_hours=2)
 ads_campaigns_results_cache = CacheManager(ttl_hours=2)
+realtime_cache = CacheManager(ttl_hours=0.25)  # 15 minutos para dados realtime
 
 # Sistema para salvar último request
 import os

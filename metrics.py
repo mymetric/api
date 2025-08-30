@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import os
 
 from utils import verify_token, TokenData, get_bigquery_client
-from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, product_trend_cache, ads_campaigns_results_cache, last_request_manager
+from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, product_trend_cache, ads_campaigns_results_cache, realtime_cache, last_request_manager
 
 # Router para métricas
 metrics_router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -235,6 +235,32 @@ class AdsCampaignsResultsRow(BaseModel):
 
 class AdsCampaignsResultsResponse(BaseModel):
     data: List[AdsCampaignsResultsRow]
+    total_rows: int
+    summary: Dict[str, Any]
+    cache_info: Optional[Dict[str, Any]] = None
+
+# Novos modelos para realtime purchases items
+class RealtimeRequest(BaseModel):
+    table_name: Optional[str] = None
+    limit: Optional[int] = 100
+
+class RealtimeRow(BaseModel):
+    event_timestamp: str
+    session_id: str
+    transaction_id: str
+    item_category: str
+    item_name: str
+    quantity: int
+    item_revenue: float
+    source: str
+    medium: str
+    campaign: str
+    content: str
+    term: str
+    page_location: str
+
+class RealtimeResponse(BaseModel):
+    data: List[RealtimeRow]
     total_rows: int
     summary: Dict[str, Any]
     cache_info: Optional[Dict[str, Any]] = None
@@ -1876,6 +1902,219 @@ async def get_ads_campaigns_results(
             detail=f"Erro interno do servidor: {str(e)}"
         )
 
+@metrics_router.post("/realtime", response_model=RealtimeResponse)
+async def get_realtime_purchases(
+    request: RealtimeRequest,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para buscar dados de compras de itens em tempo real com cache de 15 minutos"""
+    
+    # Validar limite
+    limit = min(request.limit or 100, 1000)  # Máximo 1000 registros para realtime
+    
+    # Parâmetros para o cache
+    cache_params = {
+        'email': token.email,
+        'table_name': request.table_name,
+        'limit': limit
+    }
+    
+    # Tentar buscar do cache primeiro
+    cached_data = realtime_cache.get(**cache_params)
+    if cached_data:
+        return RealtimeResponse(
+            data=cached_data['data'],
+            total_rows=cached_data['total_rows'],
+            summary=cached_data['summary'],
+            cache_info={
+                'source': 'cache',
+                'cached_at': cached_data.get('cached_at'),
+                'ttl_hours': 0.25
+            }
+        )
+    
+    # Se não estiver no cache, buscar do BigQuery
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        # Buscar informações do usuário
+        user_query = f"""
+        SELECT tablename, access_control
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        
+        user_result = client.query(user_query, job_config=job_config)
+        user_data = list(user_result.result())
+        
+        if not user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário não encontrado"
+            )
+        
+        user_tablename = user_data[0].tablename
+        access_control = user_data[0].access_control
+        
+        # Determinar qual tabela usar
+        if user_tablename == 'all':
+            # Usuário tem acesso a todas as tabelas
+            if request.table_name:
+                # Usuário escolheu uma tabela específica
+                tablename = request.table_name
+                print(f"🔓 Usuário com acesso total escolheu tabela: {tablename}")
+            else:
+                # Usar tabela padrão (constance)
+                tablename = 'constance'
+                print(f"🔓 Usuário com acesso total usando tabela padrão: {tablename}")
+        else:
+            # Usuário tem acesso limitado a uma tabela específica
+            if request.table_name and request.table_name != user_tablename:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
+                )
+            tablename = user_tablename
+            print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
+
+        # Determinar projeto
+        project_name = get_project_name(tablename)
+        
+        # Construir query realtime
+        query = f"""
+        SELECT
+            event_timestamp,
+            concat(ga_session_id, user_pseudo_id) session_id,
+            transaction_id,
+            item_category,
+            item_name,
+            quantity,
+            item_revenue,
+            source,
+            medium,
+            campaign,
+            content,
+            term,
+            page_location
+        FROM
+            `{project_name}.dbt_join.{tablename}_purchases_items_sessions_realtime`
+        ORDER BY event_timestamp DESC
+        LIMIT {limit}
+        """
+        
+        print(f"Executando query realtime: {query}")
+        
+        # Executar query
+        result = client.query(query)
+        rows = list(result.result())
+        
+        # Converter para formato de resposta
+        data = []
+        total_revenue = 0
+        total_quantity = 0
+        unique_transactions = set()
+        unique_sessions = set()
+        
+        for row in rows:
+            # Converter timestamp se necessário
+            event_timestamp_str = str(row.event_timestamp) if row.event_timestamp else ""
+            if hasattr(row.event_timestamp, 'isoformat'):
+                event_timestamp_str = row.event_timestamp.isoformat()
+            
+            data_row = RealtimeRow(
+                event_timestamp=event_timestamp_str,
+                session_id=str(row.session_id) if row.session_id else "",
+                transaction_id=str(row.transaction_id) if row.transaction_id else "",
+                item_category=str(row.item_category) if row.item_category else "",
+                item_name=str(row.item_name) if row.item_name else "",
+                quantity=int(row.quantity) if row.quantity else 0,
+                item_revenue=float(row.item_revenue) if row.item_revenue else 0.0,
+                source=str(row.source) if row.source else "",
+                medium=str(row.medium) if row.medium else "",
+                campaign=str(row.campaign) if row.campaign else "",
+                content=str(row.content) if row.content else "",
+                term=str(row.term) if row.term else "",
+                page_location=str(row.page_location) if row.page_location else ""
+            )
+            data.append(data_row)
+            
+            # Calcular totais
+            total_revenue += data_row.item_revenue
+            total_quantity += data_row.quantity
+            if data_row.transaction_id:
+                unique_transactions.add(data_row.transaction_id)
+            if data_row.session_id:
+                unique_sessions.add(data_row.session_id)
+        
+        # Calcular métricas
+        avg_item_value = total_revenue / len(data) if len(data) > 0 else 0
+        avg_quantity_per_item = total_quantity / len(data) if len(data) > 0 else 0
+        
+        # Criar resumo
+        summary = {
+            "total_items": len(data),
+            "total_revenue": total_revenue,
+            "total_quantity": total_quantity,
+            "unique_transactions": len(unique_transactions),
+            "unique_sessions": len(unique_sessions),
+            "avg_item_value": avg_item_value,
+            "avg_quantity_per_item": avg_quantity_per_item,
+            "tablename": tablename,
+            "user_access": "all" if user_tablename == 'all' else "limited",
+            "limit_applied": limit,
+            "data_freshness": "realtime"
+        }
+        
+        # Preparar resposta
+        response_data = {
+            'data': [row.dict() for row in data],
+            'total_rows': len(data),
+            'summary': summary,
+            'cached_at': datetime.now().isoformat()
+        }
+        
+        # Salvar último request
+        last_request_manager.save_last_request(
+            'realtime',
+            {
+                'table_name': request.table_name,
+                'limit': limit
+            },
+            token.email
+        )
+        
+        # Armazenar no cache
+        realtime_cache.set(response_data, **cache_params)
+        
+        return RealtimeResponse(
+            data=data,
+            total_rows=len(data),
+            summary=summary,
+            cache_info={
+                'source': 'database',
+                'cached_at': response_data['cached_at'],
+                'ttl_hours': 0.25
+            }
+        )
+        
+    except Exception as e:
+        print(f"Erro ao buscar dados realtime: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
 async def execute_last_request(endpoint: str, request_data: Dict[str, Any], token: TokenData):
     """Função auxiliar para executar a consulta baseada no último request"""
     
@@ -1958,6 +2197,15 @@ async def execute_last_request(endpoint: str, request_data: Dict[str, Any], toke
         
         temp_request = TempRequest(**request_data)
         return await get_ads_campaigns_results(temp_request, token)
+    
+    elif endpoint == "realtime":
+        from pydantic import BaseModel
+        class TempRequest(BaseModel):
+            table_name: Optional[str] = None
+            limit: Optional[int] = 100
+        
+        temp_request = TempRequest(**request_data)
+        return await get_realtime_purchases(temp_request, token)
     
     else:
         raise HTTPException(
@@ -2111,6 +2359,7 @@ async def flush_cache(token: TokenData = Depends(verify_token)):
         detailed_data_stats = detailed_data_cache.flush()
         product_trend_stats = product_trend_cache.flush()
         ads_campaigns_results_stats = ads_campaigns_results_cache.flush()
+        realtime_stats = realtime_cache.flush()
         
         return {
             "message": "Todos os caches limpos com sucesso",
@@ -2120,7 +2369,8 @@ async def flush_cache(token: TokenData = Depends(verify_token)):
                 "orders_cache": orders_stats,
                 "detailed_data_cache": detailed_data_stats,
                 "product_trend_cache": product_trend_stats,
-                "ads_campaigns_results_cache": ads_campaigns_results_stats
+                "ads_campaigns_results_cache": ads_campaigns_results_stats,
+                "realtime_cache": realtime_stats
             }
         }
         
@@ -2165,6 +2415,7 @@ async def flush_expired_cache(token: TokenData = Depends(verify_token)):
         detailed_data_stats = detailed_data_cache.flush_expired()
         product_trend_stats = product_trend_cache.flush_expired()
         ads_campaigns_results_stats = ads_campaigns_results_cache.flush_expired()
+        realtime_stats = realtime_cache.flush_expired()
         
         return {
             "message": "Entradas expiradas removidas com sucesso de todos os caches",
@@ -2174,7 +2425,8 @@ async def flush_expired_cache(token: TokenData = Depends(verify_token)):
                 "orders_cache": orders_stats,
                 "detailed_data_cache": detailed_data_stats,
                 "product_trend_cache": product_trend_stats,
-                "ads_campaigns_results_cache": ads_campaigns_results_stats
+                "ads_campaigns_results_cache": ads_campaigns_results_stats,
+                "realtime_cache": realtime_stats
             }
         }
         
@@ -2219,6 +2471,7 @@ async def get_cache_stats(token: TokenData = Depends(verify_token)):
         detailed_data_stats = detailed_data_cache.get_stats()
         product_trend_stats = product_trend_cache.get_stats()
         ads_campaigns_results_stats = ads_campaigns_results_cache.get_stats()
+        realtime_stats = realtime_cache.get_stats()
         
         return {
             "message": "Estatísticas de todos os caches",
@@ -2228,7 +2481,8 @@ async def get_cache_stats(token: TokenData = Depends(verify_token)):
                 "orders_cache": orders_stats,
                 "detailed_data_cache": detailed_data_stats,
                 "product_trend_cache": product_trend_stats,
-                "ads_campaigns_results_cache": ads_campaigns_results_stats
+                "ads_campaigns_results_cache": ads_campaigns_results_stats,
+                "realtime_cache": realtime_stats
             }
         }
         
