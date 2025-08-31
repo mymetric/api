@@ -258,6 +258,7 @@ class RealtimeRow(BaseModel):
     content: str
     term: str
     page_location: str
+    traffic_category: str
 
 class RealtimeResponse(BaseModel):
     data: List[RealtimeRow]
@@ -2007,7 +2008,8 @@ async def get_realtime_purchases(
             campaign,
             content,
             term,
-            page_location
+            page_location,
+            traffic_category
         FROM
             `{project_name}.dbt_join.{tablename}_purchases_items_sessions_realtime`
         ORDER BY event_timestamp DESC
@@ -2046,7 +2048,8 @@ async def get_realtime_purchases(
                 campaign=str(row.campaign) if row.campaign else "",
                 content=str(row.content) if row.content else "",
                 term=str(row.term) if row.term else "",
-                page_location=str(row.page_location) if row.page_location else ""
+                page_location=str(row.page_location) if row.page_location else "",
+                traffic_category=str(row.traffic_category) if row.traffic_category else ""
             )
             data.append(data_row)
             
