@@ -12,7 +12,8 @@ from datetime import datetime, timedelta
 import hashlib
 
 # Importar utilitários e router de métricas
-from utils import verify_token, TokenData, get_bigquery_client, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
+from utils import verify_token, TokenData, get_bigquery_client, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, verify_admin_user, generate_secure_password
+from email_service import email_service
 from metrics import metrics_router
 from zapi_service import zapi_service
 
@@ -55,7 +56,7 @@ class User(BaseModel):
     email: str
     admin: bool
     access_control: str  # Corrigido para STRING
-    tablename: str
+    table_name: str
 
 class Token(BaseModel):
     access_token: str
@@ -75,6 +76,12 @@ class ExperimentQuery(BaseModel):
     table_name: str
     start_date: str
     end_date: str
+
+class CreateUserRequest(BaseModel):
+    email: str
+    table_name: str
+    access_control: str = "read"  # read, write, full
+    admin: bool = False
 
 def hash_password(password: str) -> str:
     """Converte a senha para base64"""
@@ -103,7 +110,7 @@ async def login(user_credentials: UserLogin):
             email,
             admin,
             access_control,
-            tablename,
+            tablename as table_name,
             password
         FROM `mymetric-hub-shopify.dbt_config.users`
         WHERE email = @email
@@ -161,6 +168,308 @@ async def login(user_credentials: UserLogin):
         print(f"Erro no login: {e}")
         import traceback
         traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+@app.get("/users")
+async def list_users(
+    table_name: Optional[str] = None,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para listar usuários (apenas admins)"""
+    
+    # Verificar se o usuário logado é admin
+    if not verify_admin_user(token.email):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Apenas administradores podem listar usuários"
+        )
+    
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        # Construir query com filtro opcional
+        if table_name:
+            query = """
+            SELECT email, admin, access_control, tablename as table_name
+            FROM `mymetric-hub-shopify.dbt_config.users`
+            WHERE tablename = @table_name
+            ORDER BY email
+            """
+            
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("table_name", "STRING", table_name),
+                ]
+            )
+            
+            query_job = client.query(query, job_config=job_config)
+        else:
+            query = """
+            SELECT email, admin, access_control, tablename as table_name
+            FROM `mymetric-hub-shopify.dbt_config.users`
+            ORDER BY email
+            """
+            
+            query_job = client.query(query)
+        
+        results = list(query_job.result())
+        
+        users = []
+        for row in results:
+            users.append({
+                "email": row.email,
+                "admin": row.admin,
+                "access_control": row.access_control,
+                "table_name": row.table_name
+            })
+        
+        return {
+            "users": users,
+            "total": len(users),
+            "filtered_by": table_name if table_name else "all"
+        }
+        
+    except Exception as e:
+        print(f"Erro ao listar usuários: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+@app.delete("/users/{email}")
+async def delete_user(email: str, token: TokenData = Depends(verify_token)):
+    """Endpoint para deletar usuários (apenas admins)"""
+    
+    # Verificar se o usuário logado é admin
+    if not verify_admin_user(token.email):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Apenas administradores podem deletar usuários"
+        )
+    
+    # Não permitir que o admin se delete a si mesmo
+    if email == token.email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Não é possível deletar o próprio usuário"
+        )
+    
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        query = f"""
+        DELETE FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", email),
+            ]
+        )
+        
+        query_job = client.query(query, job_config=job_config)
+        query_job.result()  # Aguardar conclusão
+        
+        return {"message": f"Usuário {email} deletado com sucesso"}
+        
+    except Exception as e:
+        print(f"Erro ao deletar usuário: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+@app.post("/create-user")
+async def create_user(
+    user_data: CreateUserRequest,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para criação de usuários (apenas admins)"""
+    
+    # Verificar se o usuário logado é admin
+    if not verify_admin_user(token.email):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Apenas administradores podem criar usuários"
+        )
+    
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        # Gerar senha segura automaticamente
+        generated_password = generate_secure_password()
+        hashed_password = hash_password(generated_password)
+        
+        # Query para inserir/atualizar usuário usando MERGE
+        query = f"""
+        MERGE `mymetric-hub-shopify.dbt_config.users` AS target
+        USING (SELECT '{user_data.table_name}' as tablename, '{user_data.email}' as email, '{hashed_password}' as password) AS source
+        ON target.tablename = source.tablename AND target.email = source.email
+        WHEN MATCHED THEN
+            UPDATE SET 
+                email = source.email, 
+                password = source.password, 
+                admin = {str(user_data.admin).lower()},
+                access_control = '{user_data.access_control}'
+        WHEN NOT MATCHED THEN
+            INSERT (tablename, email, password, admin, access_control)
+            VALUES ('{user_data.table_name}', '{user_data.email}', '{hashed_password}', {str(user_data.admin).lower()}, '{user_data.access_control}')
+        """
+        
+        # Executar query
+        query_job = client.query(query)
+        query_job.result()  # Aguardar conclusão
+        
+        # Enviar email com as credenciais
+        email_sent = False
+        try:
+            # Extrair nome do email (parte antes do @)
+            user_name = user_data.email.split('@')[0].title()
+            
+            email_sent = email_service.send_user_creation_email(
+                to_email=user_data.email,
+                to_name=user_name,
+                generated_password=generated_password,
+                table_name=user_data.table_name,
+                access_control=user_data.access_control
+            )
+        except Exception as e:
+            print(f"⚠️ Erro ao enviar email: {e}")
+            email_sent = False
+        
+        return {
+            "message": "Usuário criado/atualizado com sucesso",
+            "user": {
+                "email": user_data.email,
+                "table_name": user_data.table_name,
+                "admin": user_data.admin,
+                "access_control": user_data.access_control
+            },
+            "generated_password": generated_password,
+            "note": "Esta senha foi gerada automaticamente e só será exibida uma vez. Guarde-a em local seguro.",
+            "email_sent": email_sent
+        }
+        
+    except Exception as e:
+        print(f"Erro ao criar usuário: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+@app.get("/profile")
+async def get_profile(token: TokenData = Depends(verify_token)):
+    """Endpoint para buscar perfil do usuário logado"""
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        query = f"""
+        SELECT
+            email,
+            admin,
+            access_control,
+            tablename as table_name
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        
+        query_job = client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        
+        if not results:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário não encontrado"
+            )
+        
+        user = results[0]
+        return User(
+            email=user.email,
+            admin=user.admin,
+            access_control=user.access_control if user.access_control else "",
+            table_name=user.table_name
+        )
+        
+    except Exception as e:
+        print(f"Erro ao buscar perfil: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro interno do servidor"
+        )
+
+@app.post("/test-email")
+async def test_email(
+    email_data: dict,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para testar envio de email (apenas admins)"""
+    
+    # Verificar se o usuário logado é admin
+    if not verify_admin_user(token.email):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Apenas administradores podem testar emails"
+        )
+    
+    try:
+        to_email = email_data.get("to_email")
+        to_name = email_data.get("to_name", "Teste")
+        
+        if not to_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email de destino é obrigatório"
+            )
+        
+        # Enviar email de teste
+        email_sent = email_service.send_test_email(to_email, to_name)
+        
+        if email_sent:
+            return {
+                "message": "Email de teste enviado com sucesso",
+                "to_email": to_email,
+                "to_name": to_name
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Erro ao enviar email de teste"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Erro ao testar email: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro interno do servidor: {str(e)}"
@@ -258,58 +567,6 @@ async def get_experiment_data(
             detail=f"Erro interno do servidor: {str(e)}"
         )
 
-
-@app.get("/profile")
-async def get_profile(token: TokenData = Depends(verify_token)):
-    """Endpoint para buscar perfil do usuário logado"""
-    client = get_bigquery_client()
-    if not client:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Erro de conexão com o banco de dados"
-        )
-    
-    try:
-        query = f"""
-        SELECT
-            email,
-            admin,
-            access_control,
-            tablename
-        FROM `mymetric-hub-shopify.dbt_config.users`
-        WHERE email = @email
-        """
-        
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("email", "STRING", token.email),
-            ]
-        )
-        
-        query_job = client.query(query, job_config=job_config)
-        results = list(query_job.result())
-        
-        if not results:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Usuário não encontrado"
-            )
-        
-        user = results[0]
-        return User(
-            email=user.email,
-            admin=user.admin,
-            access_control=user.access_control if user.access_control else "",
-            tablename=user.tablename
-        )
-        
-    except Exception as e:
-        print(f"Erro ao buscar perfil: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Erro interno do servidor"
-        )
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
@@ -318,4 +575,4 @@ if __name__ == "__main__":
         port=8000,
         timeout_keep_alive=65,  # Manter conexão viva por 65s
         timeout_graceful_shutdown=30  # Tempo para shutdown gracioso
-    ) 
+    )

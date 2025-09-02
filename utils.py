@@ -12,6 +12,8 @@ from google.cloud import bigquery
 from google.oauth2 import service_account
 import jwt
 from datetime import datetime, timedelta
+import secrets
+import string
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -22,6 +24,12 @@ security = HTTPBearer()
 # Modelos Pydantic
 class TokenData(BaseModel):
     email: Optional[str] = None
+
+class CreateUserRequest(BaseModel):
+    email: str
+    table_name: str
+    admin: bool = False
+    access_control: str = "read"  # read, write, full
 
 # Configuração do BigQuery
 def get_bigquery_client():
@@ -74,4 +82,57 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token inválido",
             headers={"WWW-Authenticate": "Bearer"},
-        ) 
+        )
+
+def generate_secure_password(length: int = 12) -> str:
+    """Gera uma senha segura com caracteres aleatórios"""
+    # Caracteres disponíveis para a senha
+    characters = string.ascii_letters + string.digits + "!@#$%^&*"
+    
+    # Garantir que a senha tenha pelo menos um de cada tipo
+    password = [
+        secrets.choice(string.ascii_lowercase),  # Pelo menos uma minúscula
+        secrets.choice(string.ascii_uppercase),  # Pelo menos uma maiúscula
+        secrets.choice(string.digits),           # Pelo menos um número
+        secrets.choice("!@#$%^&*")              # Pelo menos um caractere especial
+    ]
+    
+    # Completar o resto da senha com caracteres aleatórios
+    remaining_length = length - len(password)
+    password.extend(secrets.choice(characters) for _ in range(remaining_length))
+    
+    # Embaralhar a senha para não ter padrão previsível
+    password_list = list(password)
+    secrets.SystemRandom().shuffle(password_list)
+    
+    return ''.join(password_list)
+
+def verify_admin_user(email: str) -> bool:
+    """Verifica se o usuário é admin"""
+    try:
+        client = get_bigquery_client()
+        if not client:
+            return False
+        
+        query = """
+        SELECT admin
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", email),
+            ]
+        )
+        
+        query_job = client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        
+        if not results:
+            return False
+        
+        return results[0].admin
+    except Exception as e:
+        print(f"Erro ao verificar se usuário é admin: {e}")
+        return False 
