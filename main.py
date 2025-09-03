@@ -61,6 +61,9 @@ class User(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
+    table_name: str
+    access_control: str
+    admin: bool
 
 class ExperimentData(BaseModel):
     event_date: str
@@ -159,7 +162,13 @@ async def login(user_credentials: UserLogin):
         except Exception as e:
             print(f"Erro ao enviar notificação de login: {e}")
         
-        return {"access_token": access_token, "token_type": "bearer"}
+        return {
+            "access_token": access_token, 
+            "token_type": "bearer",
+            "table_name": user.table_name,
+            "access_control": user.access_control if user.access_control else "read",
+            "admin": user.admin
+        }
         
     except HTTPException:
         # Re-raise HTTP exceptions
