@@ -8,6 +8,7 @@ from typing import List, Optional, Dict, Any
 from google.cloud import bigquery
 from datetime import datetime, timedelta
 import os
+import math
 
 from utils import verify_token, TokenData, get_bigquery_client
 from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, product_trend_cache, ads_campaigns_results_cache, realtime_cache, last_request_manager
@@ -446,19 +447,29 @@ async def get_basic_data(
         total_pedidos = 0
         
         for row in rows:
+            # Função auxiliar para tratar valores NaN
+            def safe_float(value):
+                if value is None:
+                    return 0.0
+                try:
+                    float_val = float(value)
+                    return float_val if not math.isnan(float_val) else 0.0
+                except (ValueError, TypeError):
+                    return 0.0
+            
             data_row = BasicDataRow(
                 Data=str(row.Data),
                 Cluster=str(row.Cluster) if row.Cluster else "Sem Categoria",
-                Investimento=float(row.Investimento or 0),
+                Investimento=safe_float(row.Investimento),
                 Cliques=int(row.Cliques or 0),
                 Sessoes=int(row.Sessoes or 0),
                 Adicoes_ao_Carrinho=int(row.Adicoes_ao_Carrinho or 0),
                 Pedidos=int(row.Pedidos or 0),
-                Receita=float(row.Receita or 0),
+                Receita=safe_float(row.Receita),
                 Pedidos_Pagos=int(row.Pedidos_Pagos or 0),
-                Receita_Paga=float(row.Receita_Paga or 0),
+                Receita_Paga=safe_float(row.Receita_Paga),
                 Novos_Clientes=int(row.Novos_Clientes or 0),
-                Receita_Novos_Clientes=float(row.Receita_Novos_Clientes or 0)
+                Receita_Novos_Clientes=safe_float(row.Receita_Novos_Clientes)
             )
             data.append(data_row)
             
