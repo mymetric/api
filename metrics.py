@@ -202,6 +202,12 @@ class ProductTrendRow(BaseModel):
     percent_change_w3_w4: float
     trend_status: str
     trend_consistency: str
+    # Campos específicos para Havaianas
+    size_score_week_1: Optional[float] = None
+    size_score_week_2: Optional[float] = None
+    size_score_week_3: Optional[float] = None
+    size_score_week_4: Optional[float] = None
+    size_score_trend_status: Optional[str] = None
 
 class ProductTrendResponse(BaseModel):
     data: List[ProductTrendRow]
@@ -1486,7 +1492,8 @@ async def get_product_trend(
     # Validar campo de ordenação
     valid_order_fields = ['purchases_week_4', 'purchases_week_3', 'purchases_week_2', 'purchases_week_1', 
                          'percent_change_w3_w4', 'percent_change_w2_w3', 'percent_change_w1_w2', 
-                         'item_name', 'trend_status']
+                         'item_name', 'trend_status', 'size_score_week_4', 'size_score_week_3', 
+                         'size_score_week_2', 'size_score_week_1', 'size_score_trend_status']
     order_by = request.order_by or 'purchases_week_4'
     if order_by not in valid_order_fields:
         order_by = 'purchases_week_4'
@@ -1572,24 +1579,50 @@ async def get_product_trend(
         project_name = get_project_name(tablename)
         
         # Query para buscar dados de tendência de produtos com paginação
-        query = f"""
-        SELECT
-            item_id,
-            item_name,
-            purchases_week_1,
-            purchases_week_2,
-            purchases_week_3,
-            purchases_week_4,
-            percent_change_w1_w2,
-            percent_change_w2_w3,
-            percent_change_w3_w4,
-            trend_status,
-            trend_consistency
-        FROM `{project_name}.dbt_aggregated.{tablename}_product_trend`
-        ORDER BY {order_by} DESC
-        LIMIT {limit}
-        OFFSET {offset}
-        """
+        # Incluir campos específicos do Havaianas se necessário
+        if tablename == 'havaianas':
+            query = f"""
+            SELECT
+                item_id,
+                item_name,
+                purchases_week_1,
+                purchases_week_2,
+                purchases_week_3,
+                purchases_week_4,
+                percent_change_w1_w2,
+                percent_change_w2_w3,
+                percent_change_w3_w4,
+                trend_status,
+                trend_consistency,
+                size_score_week_1,
+                size_score_week_2,
+                size_score_week_3,
+                size_score_week_4,
+                size_score_trend_status
+            FROM `{project_name}.dbt_aggregated.{tablename}_product_trend`
+            ORDER BY {order_by} DESC
+            LIMIT {limit}
+            OFFSET {offset}
+            """
+        else:
+            query = f"""
+            SELECT
+                item_id,
+                item_name,
+                purchases_week_1,
+                purchases_week_2,
+                purchases_week_3,
+                purchases_week_4,
+                percent_change_w1_w2,
+                percent_change_w2_w3,
+                percent_change_w3_w4,
+                trend_status,
+                trend_consistency
+            FROM `{project_name}.dbt_aggregated.{tablename}_product_trend`
+            ORDER BY {order_by} DESC
+            LIMIT {limit}
+            OFFSET {offset}
+            """
         
         print(f"Executando query product-trend: {query}")
         
@@ -1603,19 +1636,32 @@ async def get_product_trend(
         total_purchases_w4 = 0
         
         for row in rows:
-            data_row = ProductTrendRow(
-                item_id=str(row.item_id) if row.item_id else "",
-                item_name=str(row.item_name) if row.item_name else "",
-                purchases_week_1=int(row.purchases_week_1) if row.purchases_week_1 is not None else 0,
-                purchases_week_2=int(row.purchases_week_2) if row.purchases_week_2 is not None else 0,
-                purchases_week_3=int(row.purchases_week_3) if row.purchases_week_3 is not None else 0,
-                purchases_week_4=int(row.purchases_week_4) if row.purchases_week_4 is not None else 0,
-                percent_change_w1_w2=float(row.percent_change_w1_w2) if row.percent_change_w1_w2 is not None else 0.0,
-                percent_change_w2_w3=float(row.percent_change_w2_w3) if row.percent_change_w2_w3 is not None else 0.0,
-                percent_change_w3_w4=float(row.percent_change_w3_w4) if row.percent_change_w3_w4 is not None else 0.0,
-                trend_status=str(row.trend_status) if row.trend_status else "",
-                trend_consistency=str(row.trend_consistency) if row.trend_consistency else ""
-            )
+            # Construir objeto base
+            data_row_data = {
+                'item_id': str(row.item_id) if row.item_id else "",
+                'item_name': str(row.item_name) if row.item_name else "",
+                'purchases_week_1': int(row.purchases_week_1) if row.purchases_week_1 is not None else 0,
+                'purchases_week_2': int(row.purchases_week_2) if row.purchases_week_2 is not None else 0,
+                'purchases_week_3': int(row.purchases_week_3) if row.purchases_week_3 is not None else 0,
+                'purchases_week_4': int(row.purchases_week_4) if row.purchases_week_4 is not None else 0,
+                'percent_change_w1_w2': float(row.percent_change_w1_w2) if row.percent_change_w1_w2 is not None else 0.0,
+                'percent_change_w2_w3': float(row.percent_change_w2_w3) if row.percent_change_w2_w3 is not None else 0.0,
+                'percent_change_w3_w4': float(row.percent_change_w3_w4) if row.percent_change_w3_w4 is not None else 0.0,
+                'trend_status': str(row.trend_status) if row.trend_status else "",
+                'trend_consistency': str(row.trend_consistency) if row.trend_consistency else ""
+            }
+            
+            # Adicionar campos específicos do Havaianas se disponíveis
+            if tablename == 'havaianas' and hasattr(row, 'size_score_week_1'):
+                data_row_data.update({
+                    'size_score_week_1': float(row.size_score_week_1) if row.size_score_week_1 is not None else None,
+                    'size_score_week_2': float(row.size_score_week_2) if row.size_score_week_2 is not None else None,
+                    'size_score_week_3': float(row.size_score_week_3) if row.size_score_week_3 is not None else None,
+                    'size_score_week_4': float(row.size_score_week_4) if row.size_score_week_4 is not None else None,
+                    'size_score_trend_status': str(row.size_score_trend_status) if row.size_score_trend_status else None
+                })
+            
+            data_row = ProductTrendRow(**data_row_data)
             data.append(data_row)
             
             # Calcular totais
