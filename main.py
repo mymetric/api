@@ -571,6 +571,102 @@ async def test_email(
             detail=f"Erro interno do servidor: {str(e)}"
         )
 
+@app.post("/forgot-password")
+async def forgot_password(request: dict):
+    """Endpoint para solicitar recuperação de senha"""
+    
+    try:
+        email = request.get("email")
+        
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email é obrigatório"
+            )
+        
+        # Verificar se o email existe no sistema
+        client = get_bigquery_client()
+        if not client:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Erro de conexão com o banco de dados"
+            )
+        
+        # Verificar se o usuário existe
+        query = """
+        SELECT email
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", email),
+            ]
+        )
+        
+        query_job = client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        
+        if not results:
+            # Por segurança, retornar sucesso mesmo se o email não existir
+            return {
+                "message": "Se o email existir em nosso sistema, você receberá um email de recuperação",
+                "email_sent": True
+            }
+        
+        # Gerar nova senha segura
+        new_password = generate_secure_password()
+        
+        # Atualizar senha no banco de dados
+        update_query = """
+        UPDATE `mymetric-hub-shopify.dbt_config.users`
+        SET password = @new_password
+        WHERE email = @email
+        """
+        
+        update_job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("new_password", "STRING", new_password),
+                bigquery.ScalarQueryParameter("email", "STRING", email),
+            ]
+        )
+        
+        update_job = client.query(update_query, update_job_config)
+        update_job.result()  # Aguardar conclusão
+        
+        # Extrair nome do email (parte antes do @)
+        user_name = email.split('@')[0].title()
+        
+        # Enviar email de recuperação
+        email_sent = email_service.send_password_recovery_email(
+            to_email=email,
+            to_name=user_name,
+            new_password=new_password
+        )
+        
+        if email_sent:
+            return {
+                "message": "Email de recuperação enviado com sucesso",
+                "email": email,
+                "email_sent": True,
+                "note": "Verifique sua caixa de entrada e spam. A nova senha foi gerada e enviada."
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Erro ao enviar email de recuperação"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Erro ao processar recuperação de senha: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
 @app.post("/metrics/experiments", response_model=List[ExperimentData])
 async def get_experiment_data(
     query_params: ExperimentQuery,
