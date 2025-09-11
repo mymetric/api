@@ -618,6 +618,9 @@ async def forgot_password(request: dict):
         # Gerar nova senha segura
         new_password = generate_secure_password()
         
+        # Fazer hash da nova senha
+        hashed_new_password = hash_password(new_password)
+        
         # Atualizar senha no banco de dados
         update_query = """
         UPDATE `mymetric-hub-shopify.dbt_config.users`
@@ -627,7 +630,7 @@ async def forgot_password(request: dict):
         
         update_job_config = bigquery.QueryJobConfig(
             query_parameters=[
-                bigquery.ScalarQueryParameter("new_password", "STRING", new_password),
+                bigquery.ScalarQueryParameter("new_password", "STRING", hashed_new_password),
                 bigquery.ScalarQueryParameter("email", "STRING", email),
             ]
         )
