@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 import hashlib
 
 # Importar utilitários e router de métricas
-from utils import verify_token, TokenData, get_bigquery_client, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, verify_admin_user, generate_secure_password
+from utils import verify_token, TokenData, get_bigquery_client, create_access_token, create_refresh_token, verify_refresh_token, ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS, verify_admin_user, generate_secure_password
 from email_service import email_service
 from metrics import metrics_router
 from zapi_service import zapi_service
@@ -60,10 +60,14 @@ class User(BaseModel):
 
 class Token(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str
     table_name: str
     access_control: str
     admin: bool
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
 
 class ExperimentData(BaseModel):
     event_date: str
@@ -150,10 +154,16 @@ async def login(user_credentials: UserLogin):
                 detail="Email ou senha incorretos"
             )
         
-        # Criar token de acesso
+        # Criar tokens de acesso e refresh
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        refresh_token_expires = timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+        
         access_token = create_access_token(
             data={"sub": user.email}, expires_delta=access_token_expires
+        )
+        
+        refresh_token = create_refresh_token(
+            data={"sub": user.email}, expires_delta=refresh_token_expires
         )
         
         # Enviar notificação de login via Z-API
@@ -163,7 +173,8 @@ async def login(user_credentials: UserLogin):
             print(f"Erro ao enviar notificação de login: {e}")
         
         return {
-            "access_token": access_token, 
+            "access_token": access_token,
+            "refresh_token": refresh_token,
             "token_type": "bearer",
             "table_name": user.table_name,
             "access_control": user.access_control if user.access_control else "read",
@@ -175,6 +186,82 @@ async def login(user_credentials: UserLogin):
         raise
     except Exception as e:
         print(f"Erro no login: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+@app.post("/refresh-token", response_model=Token)
+async def refresh_token(request: RefreshTokenRequest):
+    """Endpoint para renovar access token usando refresh token"""
+    try:
+        # Verificar se o refresh token é válido
+        email = verify_refresh_token(request.refresh_token)
+        
+        # Buscar dados do usuário no banco
+        client = get_bigquery_client()
+        if not client:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Erro de conexão com o banco de dados"
+            )
+        
+        # Query para buscar dados do usuário
+        query = f"""
+        SELECT
+            email,
+            admin,
+            access_control,
+            tablename as table_name
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", email),
+            ]
+        )
+        
+        query_job = client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        
+        if not results:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Usuário não encontrado"
+            )
+        
+        user = results[0]
+        
+        # Criar novos tokens
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        refresh_token_expires = timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+        
+        new_access_token = create_access_token(
+            data={"sub": user.email}, expires_delta=access_token_expires
+        )
+        
+        new_refresh_token = create_refresh_token(
+            data={"sub": user.email}, expires_delta=refresh_token_expires
+        )
+        
+        return {
+            "access_token": new_access_token,
+            "refresh_token": new_refresh_token,
+            "token_type": "bearer",
+            "table_name": user.table_name,
+            "access_control": user.access_control if user.access_control else "read",
+            "admin": user.admin
+        }
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        print(f"Erro no refresh token: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
