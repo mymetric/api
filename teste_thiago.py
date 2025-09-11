@@ -13,10 +13,16 @@ def enviar_email_teste():
     print("🧪 Teste do MailerSend - MyMetric")
     print("=" * 50)
     
-    # Configuração do MailerSend
-    API_KEY = "mlsn.4408e7dcd8ae9cab0468ffd430013cc7b1240beec8ebe85fddd5018f4ee5f19e"
-    FROM_EMAIL = "accounts@mymetric.app"
-    FROM_NAME = "MyMetric Team"
+    # Carregar configuração do MailerSend
+    try:
+        with open('credentials/mailersend_config.json', 'r') as f:
+            config = json.load(f)
+        API_KEY = config.get("api_key")
+        FROM_EMAIL = config.get("from_email", "accounts@mymetric.app")
+        FROM_NAME = config.get("from_name", "MyMetric Team")
+    except Exception as e:
+        print(f"❌ Erro ao carregar configuração: {e}")
+        return False
     
     print(f"✅ API Key: {API_KEY[:20]}...")
     print(f"✅ Email de origem: {FROM_EMAIL}")
