@@ -273,6 +273,189 @@ class RealtimeResponse(BaseModel):
     summary: Dict[str, Any]
     cache_info: Optional[Dict[str, Any]] = None
 
+# -------------------------------
+# Shipping Calc Analytics (geral)
+# -------------------------------
+class ShippingCalcAnalyticsRow(BaseModel):
+    event_date: Optional[str] = None
+    zipcode: Optional[str] = None
+    zipcode_region: Optional[str] = None
+    calculations: Optional[int] = None
+    transactions: Optional[int] = None
+    revenue: Optional[float] = None
+
+class ShippingCalcAnalyticsResponse(BaseModel):
+    data: List[ShippingCalcAnalyticsRow]
+    total_rows: int
+
+class ShippingCalcAnalyticsRequest(BaseModel):
+    table_name: Optional[str] = None
+    start_date: Optional[str] = None  # YYYY-MM-DD
+    end_date: Optional[str] = None    # YYYY-MM-DD
+
+def _run_shipping_calc_query(client, project_name: str, tablename: str, start_date: Optional[str], end_date: Optional[str]) -> List[ShippingCalcAnalyticsRow]:
+    where_clause = ""
+    if start_date and end_date:
+        if start_date == end_date:
+            where_clause = f"\nWHERE event_date = '{start_date}'"
+        else:
+            where_clause = f"\nWHERE event_date BETWEEN '{start_date}' AND '{end_date}'"
+
+    query = (
+        "SELECT\n"
+        "  event_date,\n"
+        "  zipcode,\n"
+        "  zipcode_region,\n"
+        "  calculations,\n"
+        "  transactions,\n"
+        "  revenue\n"
+        f"FROM `{project_name}.dbt_aggregated.{tablename}_shipping_calc_analytics`" +
+        where_clause +
+        "\nORDER BY event_date DESC, zipcode"
+    )
+
+    query_job = client.query(query)
+    results = list(query_job.result())
+
+    data: List[ShippingCalcAnalyticsRow] = []
+    for row in results:
+        data.append(ShippingCalcAnalyticsRow(
+            event_date=str(row.event_date) if getattr(row, "event_date", None) is not None else None,
+            zipcode=str(row.zipcode) if getattr(row, "zipcode", None) is not None else None,
+            zipcode_region=str(row.zipcode_region) if getattr(row, "zipcode_region", None) is not None else None,
+            calculations=int(row.calculations) if getattr(row, "calculations", None) is not None else None,
+            transactions=int(row.transactions) if getattr(row, "transactions", None) is not None else None,
+            revenue=float(row.revenue) if getattr(row, "revenue", None) is not None else None,
+        ))
+    return data
+
+@metrics_router.get("/shipping-calc-analytics", response_model=ShippingCalcAnalyticsResponse)
+async def shipping_calc_analytics(
+    token: TokenData = Depends(verify_token),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    table_name: Optional[str] = None
+):
+    """
+    Retorna métricas de cálculo de frete a partir da tabela
+    `bq-mktbr.dbt_aggregated.havaianas_shipping_calc_analytics`.
+    """
+    try:
+        client = get_bigquery_client()
+        if not client:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Erro de conexão com o banco de dados"
+            )
+
+        # Buscar informações do usuário para determinar tablename permitido
+        user_query = f"""
+        SELECT tablename, access_control
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        user_result = client.query(user_query, job_config=job_config)
+        user_data = list(user_result.result())
+        if not user_data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado")
+
+        user_tablename = user_data[0].tablename
+
+        if user_tablename == 'all':
+            effective_tablename = table_name or 'constance'
+        else:
+            if table_name and table_name != user_tablename:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{table_name}'"
+                )
+            effective_tablename = user_tablename
+
+        project_name = get_project_name(effective_tablename)
+
+        data = _run_shipping_calc_query(client, project_name, effective_tablename, start_date, end_date)
+
+        return ShippingCalcAnalyticsResponse(
+            data=data,
+            total_rows=len(data)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Erro no método shipping_calc_analytics: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+@metrics_router.post("/shipping-calc-analytics", response_model=ShippingCalcAnalyticsResponse)
+async def shipping_calc_analytics_post(
+    request: ShippingCalcAnalyticsRequest,
+    token: TokenData = Depends(verify_token)
+):
+    """
+    Versão POST do endpoint para compatibilidade de chamadas via POST.
+    """
+    try:
+        client = get_bigquery_client()
+        if not client:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Erro de conexão com o banco de dados"
+            )
+
+        # Buscar informações do usuário para determinar tablename permitido
+        user_query = f"""
+        SELECT tablename, access_control
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        user_result = client.query(user_query, job_config=job_config)
+        user_data = list(user_result.result())
+        if not user_data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado")
+
+        user_tablename = user_data[0].tablename
+        if user_tablename == 'all':
+            effective_tablename = request.table_name or 'constance'
+        else:
+            if request.table_name and request.table_name != user_tablename:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
+                )
+            effective_tablename = user_tablename
+
+        project_name = get_project_name(effective_tablename)
+
+        data = _run_shipping_calc_query(client, project_name, effective_tablename, request.start_date, request.end_date)
+        return ShippingCalcAnalyticsResponse(
+            data=data,
+            total_rows=len(data)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Erro no método shipping_calc_analytics_post: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
 def get_project_name(tablename: str) -> str:
     """Determina o nome do projeto baseado na tabela"""
     # Para tabelas específicas, usar projeto diferente
