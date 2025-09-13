@@ -11,10 +11,11 @@ import jwt
 from datetime import datetime, timedelta
 import hashlib
 
-# Importar utilitários e router de métricas
+# Importar utilitários e routers
 from utils import verify_token, TokenData, get_bigquery_client, create_access_token, create_refresh_token, verify_refresh_token, ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS, verify_admin_user, generate_secure_password
 from email_service import email_service
 from metrics import metrics_router
+from admin import admin_router
 from zapi_service import zapi_service
 
 # Importar métodos customizados
@@ -40,6 +41,9 @@ app.add_middleware(
 
 # Incluir router de métricas
 app.include_router(metrics_router)
+
+# Incluir router de admin
+app.include_router(admin_router)
 
 # Incluir router de métodos customizados
 app.include_router(havaianas_router)

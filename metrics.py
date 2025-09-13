@@ -150,6 +150,7 @@ class UpdateUserGoalsRequest(BaseModel):
     username: str
     goals: Dict[str, Any]
 
+
 # Novos modelos para dados detalhados
 class DetailedDataRequest(BaseModel):
     start_date: str
@@ -272,6 +273,7 @@ class RealtimeResponse(BaseModel):
     total_rows: int
     summary: Dict[str, Any]
     cache_info: Optional[Dict[str, Any]] = None
+
 
 # -------------------------------
 # Shipping Calc Analytics (geral)
@@ -2735,4 +2737,4 @@ async def get_cache_stats(token: TokenData = Depends(verify_token)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro interno do servidor: {str(e)}"
-        ) 
+        )
