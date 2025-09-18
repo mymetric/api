@@ -48,6 +48,7 @@ class BasicDataRequest(BaseModel):
 class BasicDataRow(BaseModel):
     Data: str
     Cluster: str
+    Plataforma: str
     Investimento: float
     Cliques: int
     Sessoes: int
@@ -584,6 +585,7 @@ async def get_basic_data(
                 SELECT
                     event_date AS Data,
                     traffic_category AS Cluster,
+                    platform AS Plataforma,
                     SUM(CASE WHEN event_name = 'paid_media' then value else 0 end) AS Investimento,
                     SUM(CASE WHEN event_name = 'paid_media' then clicks else 0 end) AS Cliques,
                     COUNTIF(event_name = 'session') AS Sessoes,
@@ -599,6 +601,7 @@ async def get_basic_data(
                 SELECT
                     event_date AS Data,
                     traffic_category AS Cluster,
+                    platform AS Plataforma,
                     SUM(CASE WHEN event_name = 'paid_media' then value else 0 end) AS Investimento,
                     SUM(CASE WHEN event_name = 'paid_media' then clicks else 0 end) AS Cliques,
                     COUNTIF(event_name = 'session') AS Sessoes,
@@ -645,6 +648,7 @@ async def get_basic_data(
             data_row = BasicDataRow(
                 Data=str(row.Data),
                 Cluster=str(row.Cluster) if row.Cluster else "Sem Categoria",
+                Plataforma=str(row.Plataforma) if row.Plataforma else "",
                 Investimento=safe_float(row.Investimento),
                 Cliques=int(row.Cliques or 0),
                 Sessoes=int(row.Sessoes or 0),
