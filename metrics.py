@@ -1945,13 +1945,7 @@ async def get_ads_campaigns_results(
         
         last_request = last_request_manager.get_last_request('ads-campaigns-results', request.table_name)
         if last_request:
-            # Verificar se o usuário tem permissão para ver este request
-            if last_request.get('user_email') != token.email:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Você só pode acessar seus próprios últimos requests"
-                )
-            # Executar o último request salvo
+            # Executar o último request salvo (se o usuário tem acesso à tabela, pode ver requests de qualquer usuário)
             return await execute_last_request('ads-campaigns-results', last_request['request_data'], token)
         else:
             raise HTTPException(
