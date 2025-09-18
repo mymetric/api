@@ -225,6 +225,7 @@ class AdsCampaignsResultsRequest(BaseModel):
     end_date: Optional[str] = None
     table_name: Optional[str] = None
     last_cache: Optional[bool] = False
+    force_refresh: Optional[bool] = False
 
 class AdsCampaignsResultsRow(BaseModel):
     platform: str
@@ -1969,19 +1970,20 @@ async def get_ads_campaigns_results(
         'table_name': request.table_name
     }
     
-    # Tentar buscar do cache primeiro
-    cached_data = ads_campaigns_results_cache.get(**cache_params)
-    if cached_data:
-        return AdsCampaignsResultsResponse(
-            data=cached_data['data'],
-            total_rows=cached_data['total_rows'],
-            summary=cached_data['summary'],
-            cache_info={
-                'source': 'cache',
-                'cached_at': cached_data.get('cached_at'),
-                'ttl_hours': 168  # 7 dias
-            }
-        )
+    # Tentar buscar do cache primeiro (apenas se force_refresh for False)
+    if not request.force_refresh:
+        cached_data = ads_campaigns_results_cache.get(**cache_params)
+        if cached_data:
+            return AdsCampaignsResultsResponse(
+                data=cached_data['data'],
+                total_rows=cached_data['total_rows'],
+                summary=cached_data['summary'],
+                cache_info={
+                    'source': 'cache',
+                    'cached_at': cached_data.get('cached_at'),
+                    'ttl_hours': 168  # 7 dias
+                }
+            )
     
     # Se não estiver no cache, buscar do BigQuery
     client = get_bigquery_client()
@@ -2472,6 +2474,7 @@ async def execute_last_request(endpoint: str, request_data: Dict[str, Any], toke
             end_date: Optional[str] = None
             table_name: Optional[str] = None
             last_cache: Optional[bool] = False
+            force_refresh: Optional[bool] = False
         
         temp_request = TempRequest(**request_data)
         # Garantir que last_cache seja False para evitar loop infinito
