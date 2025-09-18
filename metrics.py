@@ -221,9 +221,10 @@ class ProductTrendResponse(BaseModel):
 
 # Novos modelos para ads campaigns results
 class AdsCampaignsResultsRequest(BaseModel):
-    start_date: str
-    end_date: str
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
     table_name: Optional[str] = None
+    last_cache: Optional[bool] = False
 
 class AdsCampaignsResultsRow(BaseModel):
     platform: str
@@ -1934,6 +1935,38 @@ async def get_ads_campaigns_results(
 ):
     """Endpoint para buscar dados de resultados de campanhas publicitárias com cache de 2 horas"""
     
+    # Se last_cache for True, buscar o último request salvo específico por table_name
+    if request.last_cache:
+        if not request.table_name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="table_name é obrigatório quando last_cache é true"
+            )
+        
+        last_request = last_request_manager.get_last_request('ads-campaigns-results', request.table_name)
+        if last_request:
+            # Verificar se o usuário tem permissão para ver este request
+            if last_request.get('user_email') != token.email:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Você só pode acessar seus próprios últimos requests"
+                )
+            # Executar o último request salvo
+            return await execute_last_request('ads-campaigns-results', last_request['request_data'], token)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Nenhum último request encontrado para a tabela '{request.table_name}'"
+            )
+    
+    # Validação para request normal (quando last_cache é false)
+    if not request.last_cache:
+        if not request.start_date or not request.end_date:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="start_date e end_date são obrigatórios quando last_cache é false"
+            )
+    
     # Parâmetros para o cache
     cache_params = {
         'email': token.email,
@@ -1952,7 +1985,7 @@ async def get_ads_campaigns_results(
             cache_info={
                 'source': 'cache',
                 'cached_at': cached_data.get('cached_at'),
-                'ttl_hours': 2
+                'ttl_hours': 168  # 7 dias
             }
         )
     
@@ -2138,7 +2171,7 @@ async def get_ads_campaigns_results(
             cache_info={
                 'source': 'database',
                 'cached_at': response_data['cached_at'],
-                'ttl_hours': 2
+                'ttl_hours': 168  # 7 dias
             }
         )
         
@@ -2441,11 +2474,14 @@ async def execute_last_request(endpoint: str, request_data: Dict[str, Any], toke
     elif endpoint == "ads-campaigns-results":
         from pydantic import BaseModel
         class TempRequest(BaseModel):
-            start_date: str
-            end_date: str
+            start_date: Optional[str] = None
+            end_date: Optional[str] = None
             table_name: Optional[str] = None
+            last_cache: Optional[bool] = False
         
         temp_request = TempRequest(**request_data)
+        # Garantir que last_cache seja False para evitar loop infinito
+        temp_request.last_cache = False
         return await get_ads_campaigns_results(temp_request, token)
     
     elif endpoint == "realtime":
