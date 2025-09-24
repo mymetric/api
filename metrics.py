@@ -250,6 +250,41 @@ class AdsCampaignsResultsResponse(BaseModel):
     summary: Dict[str, Any]
     cache_info: Optional[Dict[str, Any]] = None
 
+# Novos modelos para ads creatives results
+class AdsCreativesResultsRequest(BaseModel):
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    table_name: Optional[str] = None
+    last_cache: Optional[bool] = False
+    force_refresh: Optional[bool] = False
+
+class AdsCreativesResultsRow(BaseModel):
+    platform: str
+    campaign_name: str
+    adset_id: int
+    adset_name: str
+    ad_id: int
+    ad_name: str
+    date: str
+    cost: float
+    impressions: int
+    clicks: int
+    leads: int
+    transactions: int
+    revenue: float
+    transactions_first: int
+    revenue_first: float
+    transactions_origin_stack: int
+    revenue_origin_stack: float
+    transactions_first_origin_stack: int
+    revenue_first_origin_stack: float
+
+class AdsCreativesResultsResponse(BaseModel):
+    data: List[AdsCreativesResultsRow]
+    total_rows: int
+    summary: Dict[str, Any]
+    cache_info: Optional[Dict[str, Any]] = None
+
 # Novos modelos para realtime purchases items
 class RealtimeRequest(BaseModel):
     table_name: Optional[str] = None
@@ -2178,6 +2213,254 @@ async def get_ads_campaigns_results(
             detail=f"Erro interno do servidor: {str(e)}"
         )
 
+@metrics_router.post("/ads-creatives-results", response_model=AdsCreativesResultsResponse)
+async def get_ads_creatives_results(
+    request: AdsCreativesResultsRequest,
+    token: TokenData = Depends(verify_token)
+):
+    
+    
+    # Se last_cache for True, buscar o último request salvo específico por table_name
+    if request.last_cache:
+        if not request.table_name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="table_name é obrigatório quando last_cache é true"
+            )
+        
+        last_request = last_request_manager.get_last_request('ads-creatives-results', request.table_name)
+        if last_request:
+            # Executar o último request salvo (se o usuário tem acesso à tabela, pode ver requests de qualquer usuário)
+            return await execute_last_request('ads-creatives-results', last_request['request_data'], token)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Nenhum último request encontrado para a tabela '{request.table_name}'"
+            )
+    
+    # Validação para request normal (quando last_cache é false)
+    if not request.last_cache:
+        if not request.start_date or not request.end_date:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="start_date e end_date são obrigatórios quando last_cache é false"
+            )
+    
+    # Parâmetros para o cache
+    cache_params = {
+        'email': token.email,
+        'start_date': request.start_date,
+        'end_date': request.end_date,
+        'table_name': request.table_name
+    }
+    
+    # Tentar buscar do cache primeiro (apenas se force_refresh for False)
+    if not request.force_refresh:
+        cached_result = ads_campaigns_results_cache.get(**cache_params)
+        if cached_result:
+            print(f"Cache hit para ads-creatives-results: {cache_params}")
+            return AdsCreativesResultsResponse(**cached_result)
+    
+    # Se não estiver no cache, buscar do BigQuery
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        # Buscar informações do usuário
+        user_query = f"""
+        SELECT tablename, access_control
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        
+        user_result = client.query(user_query, job_config=job_config)
+        user_data = list(user_result.result())
+        
+        if not user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário não encontrado"
+            )
+        
+        user_tablename = user_data[0].tablename
+        access_control = user_data[0].access_control
+        
+        # Determinar qual tabela usar
+        if user_tablename == 'all':
+            # Usuário tem acesso a todas as tabelas
+            if request.table_name:
+                # Usuário escolheu uma tabela específica
+                tablename = request.table_name
+                print(f"🔓 Usuário com acesso total escolheu tabela: {tablename}")
+            else:
+                # Usar tabela padrão (constance)
+                tablename = 'constance'
+                print(f"🔓 Usuário com acesso total usando tabela padrão: {tablename}")
+        else:
+            # Usuário tem acesso limitado a uma tabela específica
+            if request.table_name and request.table_name != user_tablename:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
+                )
+            tablename = user_tablename
+            print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
+
+        # Determinar projeto
+        project_name = get_project_name(tablename)
+        
+        # Construir query baseada na SQL fornecida
+        start_date_str = request.start_date
+        end_date_str = request.end_date
+        
+        query = f"""
+        SELECT
+            platform,
+            campaign_name,
+            adset_id,
+            adset_name,
+            ad_id,
+            ad_name,
+            date,
+            sum(cost) cost,
+            sum(impressions) impressions,
+            sum(clicks) clicks,
+            sum(leads) Leads,
+            sum(transactions) transactions,
+            sum(revenue) revenue,
+            sum(first_transaction) transactions_first,
+            sum(first_revenue) revenue_first,
+            sum(fsm_transactions) transactions_origin_stack,
+            sum(fsm_revenue) revenue_origin_stack,
+            sum(fsm_first_transaction) transactions_first_origin_stack,
+            sum(fsm_first_revenue) revenue_first_origin_stack
+        FROM `{project_name}.dbt_join.{tablename}_ads_creatives_results`
+        WHERE date BETWEEN '{start_date_str}' AND '{end_date_str}'
+        GROUP BY ALL
+        ORDER BY cost DESC
+        """
+        
+        print(f"Executando query ads-creatives-results: {query}")
+        
+        # Executar query
+        result = client.query(query)
+        rows = list(result.result())
+        
+        # Converter para formato de resposta
+        data = []
+        total_cost = 0
+        total_revenue = 0
+        total_impressions = 0
+        total_clicks = 0
+        total_leads = 0
+        total_transactions = 0
+        
+        for row in rows:
+            data_row = AdsCreativesResultsRow(
+                platform=row.platform or "",
+                campaign_name=row.campaign_name or "",
+                adset_id=row.adset_id or 0,
+                adset_name=row.adset_name or "",
+                ad_id=row.ad_id or 0,
+                ad_name=row.ad_name or "",
+                date=str(row.date) if row.date else "",
+                cost=float(row.cost) if row.cost is not None else 0.0,
+                impressions=int(row.impressions) if row.impressions is not None else 0,
+                clicks=int(row.clicks) if row.clicks is not None else 0,
+                leads=int(row.Leads) if row.Leads is not None else 0,
+                transactions=int(row.transactions) if row.transactions is not None else 0,
+                revenue=float(row.revenue) if row.revenue is not None else 0.0,
+                transactions_first=int(row.transactions_first) if row.transactions_first is not None else 0,
+                revenue_first=float(row.revenue_first) if row.revenue_first is not None else 0.0,
+                transactions_origin_stack=int(row.transactions_origin_stack) if row.transactions_origin_stack is not None else 0,
+                revenue_origin_stack=float(row.revenue_origin_stack) if row.revenue_origin_stack is not None else 0.0,
+                transactions_first_origin_stack=int(row.transactions_first_origin_stack) if row.transactions_first_origin_stack is not None else 0,
+                revenue_first_origin_stack=float(row.revenue_first_origin_stack) if row.revenue_first_origin_stack is not None else 0.0
+            )
+            data.append(data_row)
+            
+            # Acumular totais
+            total_cost += data_row.cost
+            total_revenue += data_row.revenue
+            total_impressions += data_row.impressions
+            total_clicks += data_row.clicks
+            total_leads += data_row.leads
+            total_transactions += data_row.transactions
+        
+        # Calcular métricas de resumo
+        ctr = (total_clicks / total_impressions * 100) if total_impressions > 0 else 0
+        cpc = (total_cost / total_clicks) if total_clicks > 0 else 0
+        cpm = (total_cost / total_impressions * 1000) if total_impressions > 0 else 0
+        conversion_rate = (total_transactions / total_clicks * 100) if total_clicks > 0 else 0
+        roas = (total_revenue / total_cost) if total_cost > 0 else 0
+        
+        summary = {
+            "total_cost": total_cost,
+            "total_revenue": total_revenue,
+            "total_impressions": total_impressions,
+            "total_clicks": total_clicks,
+            "total_leads": total_leads,
+            "total_transactions": total_transactions,
+            "ctr": round(ctr, 2),  # Click Through Rate
+            "cpc": round(cpc, 2),  # Cost Per Click
+            "cpm": round(cpm, 2),  # Cost Per Mille
+            "conversion_rate": round(conversion_rate, 2),
+            "roas": round(roas, 2),  # Return on Ad Spend
+            "periodo": f"{start_date_str} a {end_date_str}",
+            "tablename": tablename,
+            "user_access": "all" if user_tablename == 'all' else "limited"
+        }
+        
+        # Preparar resposta
+        response_data = {
+            'data': [row.dict() for row in data],
+            'total_rows': len(data),
+            'summary': summary,
+            'cached_at': datetime.now().isoformat()
+        }
+        
+        # Salvar último request
+        last_request_manager.save_last_request(
+            'ads-creatives-results',
+            {
+                'start_date': request.start_date,
+                'end_date': request.end_date,
+                'table_name': request.table_name
+            },
+            token.email
+        )
+        
+        # Armazenar no cache (usando o mesmo cache do ads-campaigns-results)
+        ads_campaigns_results_cache.set(response_data, **cache_params)
+        
+        return AdsCreativesResultsResponse(
+            data=data,
+            total_rows=len(data),
+            summary=summary,
+            cache_info={
+                'source': 'database',
+                'cached_at': response_data['cached_at'],
+                'ttl_hours': 168  # 7 dias
+            }
+        )
+        
+    except Exception as e:
+        print(f"Erro ao buscar dados de criativos publicitários: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
 @metrics_router.post("/realtime", response_model=RealtimeResponse)
 async def get_realtime_purchases(
     request: RealtimeRequest,
@@ -2480,6 +2763,20 @@ async def execute_last_request(endpoint: str, request_data: Dict[str, Any], toke
         # Garantir que last_cache seja False para evitar loop infinito
         temp_request.last_cache = False
         return await get_ads_campaigns_results(temp_request, token)
+    
+    elif endpoint == "ads-creatives-results":
+        from pydantic import BaseModel
+        class TempRequest(BaseModel):
+            start_date: Optional[str] = None
+            end_date: Optional[str] = None
+            table_name: Optional[str] = None
+            last_cache: Optional[bool] = False
+            force_refresh: Optional[bool] = False
+        
+        temp_request = TempRequest(**request_data)
+        # Garantir que last_cache seja False para evitar loop infinito
+        temp_request.last_cache = False
+        return await get_ads_creatives_results(temp_request, token)
     
     elif endpoint == "realtime":
         from pydantic import BaseModel
