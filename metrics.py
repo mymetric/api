@@ -59,11 +59,20 @@ class BasicDataRow(BaseModel):
     Receita_Paga: float
     Novos_Clientes: int
     Receita_Novos_Clientes: float
+    # Novos campos para métricas de assinatura
+    Pedidos_Assinatura_Anual_Inicial: int = 0
+    Receita_Assinatura_Anual_Inicial: float = 0.0
+    Pedidos_Assinatura_Mensal_Inicial: int = 0
+    Receita_Assinatura_Mensal_Inicial: float = 0.0
+    Pedidos_Assinatura_Anual_Recorrente: int = 0
+    Receita_Assinatura_Anual_Recorrente: float = 0.0
+    Pedidos_Assinatura_Mensal_Recorrente: int = 0
+    Receita_Assinatura_Mensal_Recorrente: float = 0.0
 
 class BasicDataResponse(BaseModel):
-    data: List[BasicDataRow]
     total_rows: int
     summary: Dict[str, Any]
+    data: List[BasicDataRow]
     cache_info: Optional[Dict[str, Any]] = None
 
 # Novos modelos para dados diários de métricas
@@ -243,11 +252,28 @@ class AdsCampaignsResultsRow(BaseModel):
     revenue_origin_stack: float
     transactions_first_origin_stack: int
     revenue_first_origin_stack: float
+    # Novos campos para métricas de assinatura
+    first_montly_subscriptions: int = 0
+    first_annual_subscriptions: int = 0
+    recurring_montly_subscriptions: int = 0
+    recurring_annual_subscriptions: int = 0
+    first_montly_revenue: float = 0.0
+    first_annual_revenue: float = 0.0
+    recurring_montly_revenue: float = 0.0
+    recurring_annual_revenue: float = 0.0
+    fsm_first_montly_subscriptions: int = 0
+    fsm_first_annual_subscriptions: int = 0
+    fsm_recurring_montly_subscriptions: int = 0
+    fsm_recurring_annual_subscriptions: int = 0
+    fsm_first_montly_revenue: float = 0.0
+    fsm_first_annual_revenue: float = 0.0
+    fsm_recurring_montly_revenue: float = 0.0
+    fsm_recurring_annual_revenue: float = 0.0
 
 class AdsCampaignsResultsResponse(BaseModel):
-    data: List[AdsCampaignsResultsRow]
     total_rows: int
     summary: Dict[str, Any]
+    data: List[AdsCampaignsResultsRow]
     cache_info: Optional[Dict[str, Any]] = None
 
 # Novos modelos para ads creatives results
@@ -311,6 +337,7 @@ class RealtimeResponse(BaseModel):
     total_rows: int
     summary: Dict[str, Any]
     cache_info: Optional[Dict[str, Any]] = None
+
 
 
 # -------------------------------
@@ -632,7 +659,16 @@ async def get_basic_data(
                     COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN transaction_id END) AS Pedidos_Pagos,
                     SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN value ELSE 0 END) AS Receita_Paga,
                     COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN transaction_id END) AS Novos_Clientes,
-                    SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Novos_Clientes"""
+                    SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Novos_Clientes,
+                    -- Métricas de assinatura
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'first annual subscription' THEN transaction_id END) AS Pedidos_Assinatura_Anual_Inicial,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'first annual subscription' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Anual_Inicial,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'first montly subscription' THEN transaction_id END) AS Pedidos_Assinatura_Mensal_Inicial,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'first montly subscription' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Mensal_Inicial,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring annual subscription' THEN transaction_id END) AS Pedidos_Assinatura_Anual_Recorrente,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring annual subscription' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Anual_Recorrente,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring montly subscription' THEN transaction_id END) AS Pedidos_Assinatura_Mensal_Recorrente,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring montly subscription' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Mensal_Recorrente"""
         else:
             base_query = f"""
                 SELECT
@@ -648,7 +684,16 @@ async def get_basic_data(
                     COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN transaction_id END) AS Pedidos_Pagos,
                     SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Paga,
                     COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN transaction_id END) AS Novos_Clientes,
-                    SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Novos_Clientes"""
+                    SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Novos_Clientes,
+                    -- Métricas de assinatura
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'first annual subscription' THEN transaction_id END) AS Pedidos_Assinatura_Anual_Inicial,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'first annual subscription' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Anual_Inicial,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'first montly subscription' THEN transaction_id END) AS Pedidos_Assinatura_Mensal_Inicial,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'first montly subscription' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Mensal_Inicial,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring annual subscription' THEN transaction_id END) AS Pedidos_Assinatura_Anual_Recorrente,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring annual subscription' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Anual_Recorrente,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring montly subscription' THEN transaction_id END) AS Pedidos_Assinatura_Mensal_Recorrente,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring montly subscription' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Mensal_Recorrente"""
 
         # Query completa
         query = f"""
@@ -670,6 +715,11 @@ async def get_basic_data(
         total_investimento = 0
         total_receita = 0
         total_pedidos = 0
+        # Totais para pedidos de assinatura
+        total_pedidos_assinatura_anual_inicial = 0
+        total_pedidos_assinatura_mensal_inicial = 0
+        total_pedidos_assinatura_anual_recorrente = 0
+        total_pedidos_assinatura_mensal_recorrente = 0
         
         for row in rows:
             # Função auxiliar para tratar valores NaN
@@ -695,7 +745,16 @@ async def get_basic_data(
                 Pedidos_Pagos=int(row.Pedidos_Pagos or 0),
                 Receita_Paga=safe_float(row.Receita_Paga),
                 Novos_Clientes=int(row.Novos_Clientes or 0),
-                Receita_Novos_Clientes=safe_float(row.Receita_Novos_Clientes)
+                Receita_Novos_Clientes=safe_float(row.Receita_Novos_Clientes),
+                # Novos campos de assinatura
+                Pedidos_Assinatura_Anual_Inicial=int(row.Pedidos_Assinatura_Anual_Inicial) if hasattr(row, 'Pedidos_Assinatura_Anual_Inicial') and row.Pedidos_Assinatura_Anual_Inicial else 0,
+                Receita_Assinatura_Anual_Inicial=safe_float(row.Receita_Assinatura_Anual_Inicial) if hasattr(row, 'Receita_Assinatura_Anual_Inicial') else 0.0,
+                Pedidos_Assinatura_Mensal_Inicial=int(row.Pedidos_Assinatura_Mensal_Inicial) if hasattr(row, 'Pedidos_Assinatura_Mensal_Inicial') and row.Pedidos_Assinatura_Mensal_Inicial else 0,
+                Receita_Assinatura_Mensal_Inicial=safe_float(row.Receita_Assinatura_Mensal_Inicial) if hasattr(row, 'Receita_Assinatura_Mensal_Inicial') else 0.0,
+                Pedidos_Assinatura_Anual_Recorrente=int(row.Pedidos_Assinatura_Anual_Recorrente) if hasattr(row, 'Pedidos_Assinatura_Anual_Recorrente') and row.Pedidos_Assinatura_Anual_Recorrente else 0,
+                Receita_Assinatura_Anual_Recorrente=safe_float(row.Receita_Assinatura_Anual_Recorrente) if hasattr(row, 'Receita_Assinatura_Anual_Recorrente') else 0.0,
+                Pedidos_Assinatura_Mensal_Recorrente=int(row.Pedidos_Assinatura_Mensal_Recorrente) if hasattr(row, 'Pedidos_Assinatura_Mensal_Recorrente') and row.Pedidos_Assinatura_Mensal_Recorrente else 0,
+                Receita_Assinatura_Mensal_Recorrente=safe_float(row.Receita_Assinatura_Mensal_Recorrente) if hasattr(row, 'Receita_Assinatura_Mensal_Recorrente') else 0.0
             )
             data.append(data_row)
             
@@ -703,12 +762,28 @@ async def get_basic_data(
             total_investimento += data_row.Investimento
             total_receita += data_row.Receita
             total_pedidos += data_row.Pedidos
+            # Calcular totais de assinatura
+            total_pedidos_assinatura_anual_inicial += data_row.Pedidos_Assinatura_Anual_Inicial
+            total_pedidos_assinatura_mensal_inicial += data_row.Pedidos_Assinatura_Mensal_Inicial
+            total_pedidos_assinatura_anual_recorrente += data_row.Pedidos_Assinatura_Anual_Recorrente
+            total_pedidos_assinatura_mensal_recorrente += data_row.Pedidos_Assinatura_Mensal_Recorrente
+        
+        # Calcular total geral de pedidos de assinatura
+        total_pedidos_assinatura = (total_pedidos_assinatura_anual_inicial + 
+                                   total_pedidos_assinatura_mensal_inicial + 
+                                   total_pedidos_assinatura_anual_recorrente + 
+                                   total_pedidos_assinatura_mensal_recorrente)
         
         # Criar resumo
         summary = {
             "total_investimento": total_investimento,
             "total_receita": total_receita,
             "total_pedidos": total_pedidos,
+            "total_pedidos_assinatura": total_pedidos_assinatura,
+            "total_pedidos_assinatura_anual_inicial": total_pedidos_assinatura_anual_inicial,
+            "total_pedidos_assinatura_mensal_inicial": total_pedidos_assinatura_mensal_inicial,
+            "total_pedidos_assinatura_anual_recorrente": total_pedidos_assinatura_anual_recorrente,
+            "total_pedidos_assinatura_mensal_recorrente": total_pedidos_assinatura_mensal_recorrente,
             "roas": total_receita / total_investimento if total_investimento > 0 else 0,
             "ticket_medio": total_receita / total_pedidos if total_pedidos > 0 else 0,
             "periodo": f"{start_date} a {end_date}",
@@ -719,9 +794,9 @@ async def get_basic_data(
         
         # Preparar resposta
         response_data = {
-            'data': [row.dict() for row in data],
             'total_rows': len(data),
             'summary': summary,
+            'data': [row.dict() for row in data],
             'cached_at': datetime.now().isoformat()
         }
         
@@ -2098,7 +2173,24 @@ async def get_ads_campaigns_results(
             sum(fsm_transactions) transactions_origin_stack,
             sum(fsm_revenue) revenue_origin_stack,
             sum(fsm_first_transaction) transactions_first_origin_stack,
-            sum(fsm_first_revenue) revenue_first_origin_stack
+            sum(fsm_first_revenue) revenue_first_origin_stack,
+            -- Novas métricas de assinatura
+            sum(first_montly_subscriptions) first_montly_subscriptions,
+            sum(first_annual_subscriptions) first_annual_subscriptions,
+            sum(recurring_montly_subscriptions) recurring_montly_subscriptions,
+            sum(recurring_annual_subscriptions) recurring_annual_subscriptions,
+            sum(first_montly_revenue) first_montly_revenue,
+            sum(first_annual_revenue) first_annual_revenue,
+            sum(recurring_montly_revenue) recurring_montly_revenue,
+            sum(recurring_annual_revenue) recurring_annual_revenue,
+            sum(fsm_first_montly_subscriptions) fsm_first_montly_subscriptions,
+            sum(fsm_first_annual_subscriptions) fsm_first_annual_subscriptions,
+            sum(fsm_recurring_montly_subscriptions) fsm_recurring_montly_subscriptions,
+            sum(fsm_recurring_annual_subscriptions) fsm_recurring_annual_subscriptions,
+            sum(fsm_first_montly_revenue) fsm_first_montly_revenue,
+            sum(fsm_first_annual_revenue) fsm_first_annual_revenue,
+            sum(fsm_recurring_montly_revenue) fsm_recurring_montly_revenue,
+            sum(fsm_recurring_annual_revenue) fsm_recurring_annual_revenue
         FROM `{project_name}.dbt_join.{tablename}_ads_campaigns_results`
         WHERE date BETWEEN '{start_date_str}' AND '{end_date_str}'
         GROUP BY ALL
@@ -2119,6 +2211,23 @@ async def get_ads_campaigns_results(
         total_clicks = 0
         total_leads = 0
         total_transactions = 0
+        # Totais para métricas de assinatura
+        total_first_montly_subscriptions = 0
+        total_first_annual_subscriptions = 0
+        total_recurring_montly_subscriptions = 0
+        total_recurring_annual_subscriptions = 0
+        total_first_montly_revenue = 0.0
+        total_first_annual_revenue = 0.0
+        total_recurring_montly_revenue = 0.0
+        total_recurring_annual_revenue = 0.0
+        total_fsm_first_montly_subscriptions = 0
+        total_fsm_first_annual_subscriptions = 0
+        total_fsm_recurring_montly_subscriptions = 0
+        total_fsm_recurring_annual_subscriptions = 0
+        total_fsm_first_montly_revenue = 0.0
+        total_fsm_first_annual_revenue = 0.0
+        total_fsm_recurring_montly_revenue = 0.0
+        total_fsm_recurring_annual_revenue = 0.0
         
         for row in rows:
             data_row = AdsCampaignsResultsRow(
@@ -2136,7 +2245,24 @@ async def get_ads_campaigns_results(
                 transactions_origin_stack=int(row.transactions_origin_stack) if row.transactions_origin_stack else 0,
                 revenue_origin_stack=float(row.revenue_origin_stack) if row.revenue_origin_stack else 0.0,
                 transactions_first_origin_stack=int(row.transactions_first_origin_stack) if row.transactions_first_origin_stack else 0,
-                revenue_first_origin_stack=float(row.revenue_first_origin_stack) if row.revenue_first_origin_stack else 0.0
+                revenue_first_origin_stack=float(row.revenue_first_origin_stack) if row.revenue_first_origin_stack else 0.0,
+                # Novos campos de assinatura
+                first_montly_subscriptions=int(row.first_montly_subscriptions) if hasattr(row, 'first_montly_subscriptions') and row.first_montly_subscriptions else 0,
+                first_annual_subscriptions=int(row.first_annual_subscriptions) if hasattr(row, 'first_annual_subscriptions') and row.first_annual_subscriptions else 0,
+                recurring_montly_subscriptions=int(row.recurring_montly_subscriptions) if hasattr(row, 'recurring_montly_subscriptions') and row.recurring_montly_subscriptions else 0,
+                recurring_annual_subscriptions=int(row.recurring_annual_subscriptions) if hasattr(row, 'recurring_annual_subscriptions') and row.recurring_annual_subscriptions else 0,
+                first_montly_revenue=float(row.first_montly_revenue) if hasattr(row, 'first_montly_revenue') and row.first_montly_revenue else 0.0,
+                first_annual_revenue=float(row.first_annual_revenue) if hasattr(row, 'first_annual_revenue') and row.first_annual_revenue else 0.0,
+                recurring_montly_revenue=float(row.recurring_montly_revenue) if hasattr(row, 'recurring_montly_revenue') and row.recurring_montly_revenue else 0.0,
+                recurring_annual_revenue=float(row.recurring_annual_revenue) if hasattr(row, 'recurring_annual_revenue') and row.recurring_annual_revenue else 0.0,
+                fsm_first_montly_subscriptions=int(row.fsm_first_montly_subscriptions) if hasattr(row, 'fsm_first_montly_subscriptions') and row.fsm_first_montly_subscriptions else 0,
+                fsm_first_annual_subscriptions=int(row.fsm_first_annual_subscriptions) if hasattr(row, 'fsm_first_annual_subscriptions') and row.fsm_first_annual_subscriptions else 0,
+                fsm_recurring_montly_subscriptions=int(row.fsm_recurring_montly_subscriptions) if hasattr(row, 'fsm_recurring_montly_subscriptions') and row.fsm_recurring_montly_subscriptions else 0,
+                fsm_recurring_annual_subscriptions=int(row.fsm_recurring_annual_subscriptions) if hasattr(row, 'fsm_recurring_annual_subscriptions') and row.fsm_recurring_annual_subscriptions else 0,
+                fsm_first_montly_revenue=float(row.fsm_first_montly_revenue) if hasattr(row, 'fsm_first_montly_revenue') and row.fsm_first_montly_revenue else 0.0,
+                fsm_first_annual_revenue=float(row.fsm_first_annual_revenue) if hasattr(row, 'fsm_first_annual_revenue') and row.fsm_first_annual_revenue else 0.0,
+                fsm_recurring_montly_revenue=float(row.fsm_recurring_montly_revenue) if hasattr(row, 'fsm_recurring_montly_revenue') and row.fsm_recurring_montly_revenue else 0.0,
+                fsm_recurring_annual_revenue=float(row.fsm_recurring_annual_revenue) if hasattr(row, 'fsm_recurring_annual_revenue') and row.fsm_recurring_annual_revenue else 0.0
             )
             data.append(data_row)
             
@@ -2147,6 +2273,23 @@ async def get_ads_campaigns_results(
             total_clicks += data_row.clicks
             total_leads += data_row.leads
             total_transactions += data_row.transactions
+            # Calcular totais de assinatura
+            total_first_montly_subscriptions += data_row.first_montly_subscriptions
+            total_first_annual_subscriptions += data_row.first_annual_subscriptions
+            total_recurring_montly_subscriptions += data_row.recurring_montly_subscriptions
+            total_recurring_annual_subscriptions += data_row.recurring_annual_subscriptions
+            total_first_montly_revenue += data_row.first_montly_revenue
+            total_first_annual_revenue += data_row.first_annual_revenue
+            total_recurring_montly_revenue += data_row.recurring_montly_revenue
+            total_recurring_annual_revenue += data_row.recurring_annual_revenue
+            total_fsm_first_montly_subscriptions += data_row.fsm_first_montly_subscriptions
+            total_fsm_first_annual_subscriptions += data_row.fsm_first_annual_subscriptions
+            total_fsm_recurring_montly_subscriptions += data_row.fsm_recurring_montly_subscriptions
+            total_fsm_recurring_annual_subscriptions += data_row.fsm_recurring_annual_subscriptions
+            total_fsm_first_montly_revenue += data_row.fsm_first_montly_revenue
+            total_fsm_first_annual_revenue += data_row.fsm_first_annual_revenue
+            total_fsm_recurring_montly_revenue += data_row.fsm_recurring_montly_revenue
+            total_fsm_recurring_annual_revenue += data_row.fsm_recurring_annual_revenue
         
         # Calcular métricas
         ctr = (total_clicks / total_impressions * 100) if total_impressions > 0 else 0
@@ -2154,6 +2297,16 @@ async def get_ads_campaigns_results(
         cpc = (total_cost / total_clicks) if total_clicks > 0 else 0
         conversion_rate = (total_transactions / total_clicks * 100) if total_clicks > 0 else 0
         roas = (total_revenue / total_cost) if total_cost > 0 else 0
+        
+        # Calcular totais gerais de assinatura
+        total_subscriptions = (total_first_montly_subscriptions + total_first_annual_subscriptions + 
+                             total_recurring_montly_subscriptions + total_recurring_annual_subscriptions)
+        total_subscription_revenue = (total_first_montly_revenue + total_first_annual_revenue + 
+                                    total_recurring_montly_revenue + total_recurring_annual_revenue)
+        total_fsm_subscriptions = (total_fsm_first_montly_subscriptions + total_fsm_first_annual_subscriptions + 
+                                 total_fsm_recurring_montly_subscriptions + total_fsm_recurring_annual_subscriptions)
+        total_fsm_subscription_revenue = (total_fsm_first_montly_revenue + total_fsm_first_annual_revenue + 
+                                        total_fsm_recurring_montly_revenue + total_fsm_recurring_annual_revenue)
         
         # Criar resumo
         summary = {
@@ -2168,6 +2321,28 @@ async def get_ads_campaigns_results(
             "cpc": cpc,  # Cost Per Click
             "conversion_rate": conversion_rate,
             "roas": roas,  # Return on Ad Spend
+            # Métricas de assinatura (último clique)
+            "total_subscriptions": total_subscriptions,
+            "total_subscription_revenue": total_subscription_revenue,
+            "total_first_montly_subscriptions": total_first_montly_subscriptions,
+            "total_first_annual_subscriptions": total_first_annual_subscriptions,
+            "total_recurring_montly_subscriptions": total_recurring_montly_subscriptions,
+            "total_recurring_annual_subscriptions": total_recurring_annual_subscriptions,
+            "total_first_montly_revenue": total_first_montly_revenue,
+            "total_first_annual_revenue": total_first_annual_revenue,
+            "total_recurring_montly_revenue": total_recurring_montly_revenue,
+            "total_recurring_annual_revenue": total_recurring_annual_revenue,
+            # Métricas de assinatura (primeiro clique - FSM)
+            "total_fsm_subscriptions": total_fsm_subscriptions,
+            "total_fsm_subscription_revenue": total_fsm_subscription_revenue,
+            "total_fsm_first_montly_subscriptions": total_fsm_first_montly_subscriptions,
+            "total_fsm_first_annual_subscriptions": total_fsm_first_annual_subscriptions,
+            "total_fsm_recurring_montly_subscriptions": total_fsm_recurring_montly_subscriptions,
+            "total_fsm_recurring_annual_subscriptions": total_fsm_recurring_annual_subscriptions,
+            "total_fsm_first_montly_revenue": total_fsm_first_montly_revenue,
+            "total_fsm_first_annual_revenue": total_fsm_first_annual_revenue,
+            "total_fsm_recurring_montly_revenue": total_fsm_recurring_montly_revenue,
+            "total_fsm_recurring_annual_revenue": total_fsm_recurring_annual_revenue,
             "periodo": f"{start_date_str} a {end_date_str}",
             "tablename": tablename,
             "user_access": "all" if user_tablename == 'all' else "limited"
@@ -2677,6 +2852,7 @@ async def get_realtime_purchases(
             detail=f"Erro interno do servidor: {str(e)}"
         )
 
+
 async def execute_last_request(endpoint: str, request_data: Dict[str, Any], token: TokenData):
     """Função auxiliar para executar a consulta baseada no último request"""
     
@@ -2793,60 +2969,6 @@ async def execute_last_request(endpoint: str, request_data: Dict[str, Any], toke
             detail=f"Endpoint '{endpoint}' não suportado para execução automática"
         )
 
-@metrics_router.get("/last-request/{endpoint}")
-async def get_last_request(
-    endpoint: str,
-    table_name: str,
-    token: TokenData = Depends(verify_token)
-):
-    """Endpoint para buscar e executar o último request de um endpoint específico para um cliente específico"""
-    
-    try:
-        last_request = last_request_manager.get_last_request(endpoint, table_name)
-        
-        if not last_request:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Nenhum request encontrado para o endpoint '{endpoint}' e cliente '{table_name}'"
-            )
-        
-        # Verificar se o usuário tem permissão para ver este request
-        if last_request['user_email'] != token.email:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Você só pode ver seus próprios últimos requests"
-            )
-        
-        # Executar a consulta automaticamente
-        print(f"🔄 Executando último request para {endpoint} - Cliente: {table_name}")
-        result = await execute_last_request(endpoint, last_request['request_data'], token)
-        
-        # Adicionar informações do último request ao resultado
-        if hasattr(result, 'dict'):
-            result_dict = result.dict()
-        else:
-            result_dict = result
-        
-        result_dict['last_request_info'] = {
-            "endpoint": endpoint,
-            "table_name": table_name,
-            "request_data": last_request['request_data'],
-            "user_email": last_request['user_email'],
-            "timestamp": last_request['timestamp'],
-            "executed_at": datetime.now().isoformat()
-        }
-        
-        return result_dict
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Erro ao executar último request: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro interno do servidor: {str(e)}"
-        )
-
 @metrics_router.get("/last-request/stats")
 async def get_last_request_stats(token: TokenData = Depends(verify_token)):
     """Endpoint para ver estatísticas do storage de últimos requests"""
@@ -2900,6 +3022,60 @@ async def get_all_last_requests(
         raise
     except Exception as e:
         print(f"Erro ao buscar todos os últimos requests: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+@metrics_router.get("/last-request/{endpoint}")
+async def get_last_request(
+    endpoint: str,
+    table_name: str,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para buscar e executar o último request de um endpoint específico para um cliente específico"""
+    
+    try:
+        last_request = last_request_manager.get_last_request(endpoint, table_name)
+        
+        if not last_request:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Nenhum request encontrado para o endpoint '{endpoint}' e cliente '{table_name}'"
+            )
+        
+        # Verificar se o usuário tem permissão para ver este request
+        if last_request['user_email'] != token.email:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Você só pode ver seus próprios últimos requests"
+            )
+        
+        # Executar a consulta automaticamente
+        print(f"🔄 Executando último request para {endpoint} - Cliente: {table_name}")
+        result = await execute_last_request(endpoint, last_request['request_data'], token)
+        
+        # Adicionar informações do último request ao resultado
+        if hasattr(result, 'dict'):
+            result_dict = result.dict()
+        else:
+            result_dict = result
+        
+        result_dict['last_request_info'] = {
+            "endpoint": endpoint,
+            "table_name": table_name,
+            "request_data": last_request['request_data'],
+            "user_email": last_request['user_email'],
+            "timestamp": last_request['timestamp'],
+            "executed_at": datetime.now().isoformat()
+        }
+        
+        return result_dict
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Erro ao executar último request: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro interno do servidor: {str(e)}"
