@@ -348,10 +348,18 @@ class ShippingCalcAnalyticsRow(BaseModel):
     zipcode: Optional[str] = None
     zipcode_region: Optional[str] = None
     calculations: Optional[int] = None
+    calculations_freight_unavailable: Optional[int] = None
     transactions: Optional[int] = None
     revenue: Optional[float] = None
 
+class ShippingCalcAnalyticsSummary(BaseModel):
+    total_calculations: int = 0
+    total_calculations_freight_unavailable: int = 0
+    total_transactions: int = 0
+    total_revenue: float = 0.0
+
 class ShippingCalcAnalyticsResponse(BaseModel):
+    summary: ShippingCalcAnalyticsSummary
     data: List[ShippingCalcAnalyticsRow]
     total_rows: int
 
@@ -374,6 +382,7 @@ def _run_shipping_calc_query(client, project_name: str, tablename: str, start_da
         "  zipcode,\n"
         "  zipcode_region,\n"
         "  calculations,\n"
+        "  calculations_freight_unavailable,\n"
         "  transactions,\n"
         "  revenue\n"
         f"FROM `{project_name}.dbt_aggregated.{tablename}_shipping_calc_analytics`" +
@@ -391,10 +400,35 @@ def _run_shipping_calc_query(client, project_name: str, tablename: str, start_da
             zipcode=str(row.zipcode) if getattr(row, "zipcode", None) is not None else None,
             zipcode_region=str(row.zipcode_region) if getattr(row, "zipcode_region", None) is not None else None,
             calculations=int(row.calculations) if getattr(row, "calculations", None) is not None else None,
+            calculations_freight_unavailable=int(row.calculations_freight_unavailable) if getattr(row, "calculations_freight_unavailable", None) is not None else None,
             transactions=int(row.transactions) if getattr(row, "transactions", None) is not None else None,
             revenue=float(row.revenue) if getattr(row, "revenue", None) is not None else None,
         ))
     return data
+
+def _calculate_shipping_calc_summary(data: List[ShippingCalcAnalyticsRow]) -> ShippingCalcAnalyticsSummary:
+    """Calcula o sumário de totais dos dados de shipping calc analytics"""
+    total_calculations = 0
+    total_calculations_freight_unavailable = 0
+    total_transactions = 0
+    total_revenue = 0.0
+    
+    for row in data:
+        if row.calculations is not None:
+            total_calculations += row.calculations
+        if row.calculations_freight_unavailable is not None:
+            total_calculations_freight_unavailable += row.calculations_freight_unavailable
+        if row.transactions is not None:
+            total_transactions += row.transactions
+        if row.revenue is not None:
+            total_revenue += row.revenue
+    
+    return ShippingCalcAnalyticsSummary(
+        total_calculations=total_calculations,
+        total_calculations_freight_unavailable=total_calculations_freight_unavailable,
+        total_transactions=total_transactions,
+        total_revenue=total_revenue
+    )
 
 @metrics_router.get("/shipping-calc-analytics", response_model=ShippingCalcAnalyticsResponse)
 async def shipping_calc_analytics(
@@ -446,8 +480,10 @@ async def shipping_calc_analytics(
         project_name = get_project_name(effective_tablename)
 
         data = _run_shipping_calc_query(client, project_name, effective_tablename, start_date, end_date)
+        summary = _calculate_shipping_calc_summary(data)
 
         return ShippingCalcAnalyticsResponse(
+            summary=summary,
             data=data,
             total_rows=len(data)
         )
@@ -508,7 +544,9 @@ async def shipping_calc_analytics_post(
         project_name = get_project_name(effective_tablename)
 
         data = _run_shipping_calc_query(client, project_name, effective_tablename, request.start_date, request.end_date)
+        summary = _calculate_shipping_calc_summary(data)
         return ShippingCalcAnalyticsResponse(
+            summary=summary,
             data=data,
             total_rows=len(data)
         )
