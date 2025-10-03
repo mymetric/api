@@ -3,7 +3,7 @@ Módulo de endpoints para métricas do dashboard
 """
 
 from fastapi import APIRouter, HTTPException, Depends, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from google.cloud import bigquery
 from datetime import datetime, timedelta
@@ -214,6 +214,16 @@ class ProductTrendRow(BaseModel):
     percent_change_w3_w4: float
     trend_status: str
     trend_consistency: str
+    # Campos de benchmark
+    benchmark_week_1: Optional[float] = Field(default=None, json_schema_extra={"example": None})
+    benchmark_week_2: Optional[float] = Field(default=None, json_schema_extra={"example": None})
+    benchmark_week_3: Optional[float] = Field(default=None, json_schema_extra={"example": None})
+    benchmark_week_4: Optional[float] = Field(default=None, json_schema_extra={"example": None})
+    # Campos de clicks
+    clicks_week_1: Optional[int] = Field(default=None, json_schema_extra={"example": None})
+    clicks_week_2: Optional[int] = Field(default=None, json_schema_extra={"example": None})
+    clicks_week_3: Optional[int] = Field(default=None, json_schema_extra={"example": None})
+    clicks_week_4: Optional[int] = Field(default=None, json_schema_extra={"example": None})
     # Campos específicos para Havaianas
     size_score_week_1: Optional[float] = None
     size_score_week_2: Optional[float] = None
@@ -1842,7 +1852,9 @@ async def get_product_trend(
     # Validar campo de ordenação
     valid_order_fields = ['purchases_week_4', 'purchases_week_3', 'purchases_week_2', 'purchases_week_1', 
                          'percent_change_w3_w4', 'percent_change_w2_w3', 'percent_change_w1_w2', 
-                         'item_name', 'trend_status', 'size_score_week_4', 'size_score_week_3', 
+                         'item_name', 'trend_status', 'benchmark_week_1', 'benchmark_week_2', 
+                         'benchmark_week_3', 'benchmark_week_4', 'clicks_week_1', 'clicks_week_2',
+                         'clicks_week_3', 'clicks_week_4', 'size_score_week_4', 'size_score_week_3', 
                          'size_score_week_2', 'size_score_week_1', 'size_score_trend_status']
     order_by = request.order_by or 'purchases_week_4'
     if order_by not in valid_order_fields:
@@ -1928,51 +1940,73 @@ async def get_product_trend(
         # Determinar projeto
         project_name = get_project_name(tablename)
         
+        # Verificar quais campos benchmark e clicks existem na tabela
+        benchmark_fields = []
+        clicks_fields = []
+        fields_check_query = f"""
+        SELECT column_name
+        FROM `{project_name}.dbt_aggregated.INFORMATION_SCHEMA.COLUMNS`
+        WHERE table_name = '{tablename}_product_trend'
+        AND (column_name LIKE 'benchmark_week_%' OR column_name LIKE 'clicks_week_%')
+        ORDER BY column_name
+        """
+        
+        try:
+            fields_result = client.query(fields_check_query)
+            fields_rows = list(fields_result.result())
+            all_extra_fields = [row.column_name for row in fields_rows]
+            
+            benchmark_fields = [field for field in all_extra_fields if field.startswith('benchmark_week_')]
+            clicks_fields = [field for field in all_extra_fields if field.startswith('clicks_week_')]
+            
+            print(f"Campos benchmark encontrados para {tablename}: {benchmark_fields}")
+            print(f"Campos clicks encontrados para {tablename}: {clicks_fields}")
+        except Exception as e:
+            print(f"Aviso: Não foi possível verificar campos extras para {tablename}: {e}")
+            benchmark_fields = []
+            clicks_fields = []
+        
         # Query para buscar dados de tendência de produtos com paginação
         # Incluir campos específicos do Havaianas se necessário
+        # Construir query base
+        base_fields = [
+            "item_id",
+            "item_name", 
+            "purchases_week_1",
+            "purchases_week_2",
+            "purchases_week_3",
+            "purchases_week_4",
+            "percent_change_w1_w2",
+            "percent_change_w2_w3",
+            "percent_change_w3_w4",
+            "trend_status",
+            "trend_consistency"
+        ]
+        
+        # Adicionar campos benchmark e clicks se existirem
+        all_fields = base_fields + benchmark_fields + clicks_fields
+        
+        # Adicionar campos específicos do Havaianas se for a tabela havaianas
         if tablename == 'havaianas':
-            query = f"""
-            SELECT
-                item_id,
-                item_name,
-                purchases_week_1,
-                purchases_week_2,
-                purchases_week_3,
-                purchases_week_4,
-                percent_change_w1_w2,
-                percent_change_w2_w3,
-                percent_change_w3_w4,
-                trend_status,
-                trend_consistency,
-                size_score_week_1,
-                size_score_week_2,
-                size_score_week_3,
-                size_score_week_4,
-                size_score_trend_status
-            FROM `{project_name}.dbt_aggregated.{tablename}_product_trend`
-            ORDER BY {order_by} DESC
-            LIMIT {limit}
-            OFFSET {offset}
-            """
-        else:
-            query = f"""
-            SELECT
-                item_id,
-                item_name,
-                purchases_week_1,
-                purchases_week_2,
-                purchases_week_3,
-                purchases_week_4,
-                percent_change_w1_w2,
-                percent_change_w2_w3,
-                percent_change_w3_w4,
-                trend_status,
-                trend_consistency
-            FROM `{project_name}.dbt_aggregated.{tablename}_product_trend`
-            ORDER BY {order_by} DESC
-            LIMIT {limit}
-            OFFSET {offset}
-            """
+            havaianas_fields = [
+                "size_score_week_1",
+                "size_score_week_2", 
+                "size_score_week_3",
+                "size_score_week_4",
+                "size_score_trend_status"
+            ]
+            all_fields.extend(havaianas_fields)
+        
+        # Construir query final
+        fields_str = ",\n                ".join(all_fields)
+        query = f"""
+        SELECT
+                {fields_str}
+        FROM `{project_name}.dbt_aggregated.{tablename}_product_trend`
+        ORDER BY {order_by} DESC
+        LIMIT {limit}
+        OFFSET {offset}
+        """
         
         print(f"Executando query product-trend: {query}")
         
@@ -1998,8 +2032,26 @@ async def get_product_trend(
                 'percent_change_w2_w3': float(row.percent_change_w2_w3) if row.percent_change_w2_w3 is not None else 0.0,
                 'percent_change_w3_w4': float(row.percent_change_w3_w4) if row.percent_change_w3_w4 is not None else 0.0,
                 'trend_status': str(row.trend_status) if row.trend_status else "",
-                'trend_consistency': str(row.trend_consistency) if row.trend_consistency else ""
+                'trend_consistency': str(row.trend_consistency) if row.trend_consistency else "",
+                'benchmark_week_1': None,
+                'benchmark_week_2': None,
+                'benchmark_week_3': None,
+                'benchmark_week_4': None,
+                'clicks_week_1': None,
+                'clicks_week_2': None,
+                'clicks_week_3': None,
+                'clicks_week_4': None
             }
+            
+            # Adicionar campos benchmark se existirem na tabela
+            for field in benchmark_fields:
+                if hasattr(row, field):
+                    data_row_data[field] = float(getattr(row, field)) if getattr(row, field) is not None else None
+            
+            # Adicionar campos clicks se existirem na tabela
+            for field in clicks_fields:
+                if hasattr(row, field):
+                    data_row_data[field] = int(getattr(row, field)) if getattr(row, field) is not None else None
             
             # Adicionar campos específicos do Havaianas se disponíveis
             if tablename == 'havaianas' and hasattr(row, 'size_score_week_1'):
