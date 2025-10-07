@@ -1703,28 +1703,58 @@ async def get_detailed_data(
         # Construir condição de data
         date_condition = f"event_date BETWEEN '{request.start_date}' AND '{request.end_date}'"
         
-        # Primeiro, calcular o sumário com TODOS os dados do período (sem paginação)
+        # Query que agrega TODAS as métricas juntas (não usa UNION ALL)
+        query = f"""
+        SELECT
+            event_date AS Data,
+            extract(hour from created_at) as Hora,
+            source as Origem,
+            medium as `Midia`, 
+            campaign as Campanha,
+            page_location as `Pagina_de_Entrada`,
+            content as `Conteudo`,
+            coalesce(discount_code, 'Sem Cupom') as `Cupom`,
+            traffic_category as `Cluster`,
+            COUNTIF(event_name = 'session') as `Sessoes`,
+            COUNTIF(event_name = 'add_to_cart') as `Adicoes_ao_Carrinho`,
+            COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' THEN transaction_id END) as `Pedidos`,
+            SUM(CASE WHEN event_name = '{attribution_model}' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) as `Receita`,
+            COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' AND status in ('paid', 'authorized') THEN transaction_id END) as `Pedidos_Pagos`,
+            SUM(CASE WHEN event_name = '{attribution_model}' AND status in ('paid', 'authorized') THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) as `Receita_Paga`
+        FROM `{project_name}.dbt_join.{tablename}_events_long`
+        WHERE {date_condition}
+        GROUP BY event_date, extract(hour from created_at), source, medium, campaign, page_location, content, discount_code, traffic_category
+        ORDER BY {order_by} DESC
+        LIMIT {limit} OFFSET {offset}
+        """
+        
+        print(f"Executando query de dados detalhados com paginação: limit={limit}, offset={offset}, order_by={order_by}")
+        
+        # Executar query
+        result = client.query(query)
+        rows = list(result.result())
+        
+        # Calcular sumário com base nos mesmos grupos, SEM paginação
         summary_query = f"""
-        WITH all_events AS (
+        SELECT
+            SUM(Sessoes) as total_sessions,
+            SUM(Adicoes_ao_Carrinho) as total_add_to_cart,
+            SUM(Pedidos) as total_orders,
+            SUM(Receita) as total_revenue,
+            SUM(Pedidos_Pagos) as total_paid_orders,
+            SUM(Receita_Paga) as total_paid_revenue
+        FROM (
             SELECT
-                event_name,
-                transaction_id,
-                value,
-                shipping_value,
-                total_discounts,
-                status
+                COUNTIF(event_name = 'session') as Sessoes,
+                COUNTIF(event_name = 'add_to_cart') as Adicoes_ao_Carrinho,
+                COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' THEN transaction_id END) as Pedidos,
+                SUM(CASE WHEN event_name = '{attribution_model}' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) as Receita,
+                COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' AND status in ('paid', 'authorized') THEN transaction_id END) as Pedidos_Pagos,
+                SUM(CASE WHEN event_name = '{attribution_model}' AND status in ('paid', 'authorized') THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) as Receita_Paga
             FROM `{project_name}.dbt_join.{tablename}_events_long`
             WHERE {date_condition}
+            GROUP BY event_date, extract(hour from created_at), source, medium, campaign, page_location, content, discount_code, traffic_category
         )
-        SELECT
-            COUNTIF(event_name = 'session') as total_sessions,
-            COUNTIF(event_name = 'add_to_cart') as total_add_to_cart,
-            COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' THEN transaction_id END) as total_orders,
-            SUM(CASE WHEN event_name = '{attribution_model}' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) as total_revenue,
-            COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' AND status in ('paid', 'authorized') THEN transaction_id END) as total_paid_orders,
-            SUM(CASE WHEN event_name = '{attribution_model}' AND status in ('paid', 'authorized') THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) as total_paid_revenue,
-            COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' AND status in ('paid', 'authorized') THEN transaction_id END) as total_novos_clientes
-        FROM all_events
         """
         
         print(f"🔍 Executando query de sumário...")
@@ -1739,13 +1769,13 @@ async def get_detailed_data(
         total_paid_orders = int(summary_row.total_paid_orders) if summary_row.total_paid_orders else 0
         total_paid_revenue = float(summary_row.total_paid_revenue) if summary_row.total_paid_revenue else 0.0
         
-        # Calcular métricas derivadas (similar ao basic-data)
+        # Calcular métricas derivadas
         conversion_rate = (total_orders / total_sessions * 100) if total_sessions > 0 else 0
         add_to_cart_rate = (total_add_to_cart / total_sessions * 100) if total_sessions > 0 else 0
         ticket_medio = total_revenue / total_orders if total_orders > 0 else 0
         ticket_medio_pago = total_paid_revenue / total_paid_orders if total_paid_orders > 0 else 0
         
-        # Criar sumário completo (similar ao basic-data)
+        # Criar sumário completo
         summary = {
             # Totais principais
             "total_sessoes": total_sessions,
@@ -1774,89 +1804,8 @@ async def get_detailed_data(
         
         print(f"✅ Sumário calculado: {total_sessions} sessões, {total_orders} pedidos, R$ {total_revenue:.2f} receita")
         
-        # Agora executar a query paginada para os dados detalhados
-        query = f"""
-        WITH session_data AS (
-            SELECT
-                event_date AS Data,
-                extract(hour from created_at) as Hora,
-                source as Origem,
-                medium as `Midia`, 
-                campaign as Campanha,
-                page_location as `Pagina_de_Entrada`,
-                content as `Conteudo`,
-                coalesce(discount_code, 'Sem Cupom') as `Cupom`,
-                traffic_category as `Cluster`,
-                COUNT(*) as `Sessoes`,
-                0 as `Adicoes_ao_Carrinho`,
-                0 as `Pedidos`,
-                0.0 as `Receita`,
-                0 as `Pedidos_Pagos`,
-                0.0 as `Receita_Paga`
-            FROM `{project_name}.dbt_join.{tablename}_events_long`
-            WHERE {date_condition} AND event_name = 'session'
-            GROUP BY event_date, Hora, source, medium, campaign, page_location, content, discount_code, traffic_category
-        ),
-        add_to_cart_data AS (
-            SELECT
-                event_date AS Data,
-                extract(hour from created_at) as Hora,
-                source as Origem,
-                medium as `Midia`, 
-                campaign as Campanha,
-                page_location as `Pagina_de_Entrada`,
-                content as `Conteudo`,
-                coalesce(discount_code, 'Sem Cupom') as `Cupom`,
-                traffic_category as `Cluster`,
-                0 as `Sessoes`,
-                COUNT(*) as `Adicoes_ao_Carrinho`,
-                0 as `Pedidos`,
-                0.0 as `Receita`,
-                0 as `Pedidos_Pagos`,
-                0.0 as `Receita_Paga`
-            FROM `{project_name}.dbt_join.{tablename}_events_long`
-            WHERE {date_condition} AND event_name = 'add_to_cart'
-            GROUP BY event_date, Hora, source, medium, campaign, page_location, content, discount_code, traffic_category
-        ),
-        purchase_data AS (
-            SELECT
-                event_date AS Data,
-                extract(hour from created_at) as Hora,
-                source as Origem,
-                medium as `Midia`, 
-                campaign as Campanha,
-                page_location as `Pagina_de_Entrada`,
-                content as `Conteudo`,
-                coalesce(discount_code, 'Sem Cupom') as `Cupom`,
-                traffic_category as `Cluster`,
-                0 as `Sessoes`,
-                0 as `Adicoes_ao_Carrinho`,
-                COUNT(DISTINCT transaction_id) as `Pedidos`,
-                SUM(value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0)) as `Receita`,
-                COUNT(DISTINCT CASE WHEN status in ('paid', 'authorized') THEN transaction_id END) as `Pedidos_Pagos`,
-                SUM(CASE WHEN status in ('paid', 'authorized') THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) as `Receita_Paga`
-            FROM `{project_name}.dbt_join.{tablename}_events_long`
-            WHERE {date_condition} AND event_name = '{attribution_model}'
-            GROUP BY event_date, Hora, source, medium, campaign, page_location, content, discount_code, traffic_category
-        )
-        SELECT * FROM (
-            SELECT * FROM session_data
-            UNION ALL
-            SELECT * FROM add_to_cart_data
-            UNION ALL
-            SELECT * FROM purchase_data
-        )
-        ORDER BY {order_by} DESC
-        LIMIT {limit} OFFSET {offset}
-        """
-        
-        print(f"Executando query de dados detalhados com paginação: limit={limit}, offset={offset}, order_by={order_by}")
-        
-        # Executar query paginada
-        result = client.query(query)
-        rows = list(result.result())
-        
         # Processar resultados paginados
+        data = []
         data = []
         
         for row in rows:
