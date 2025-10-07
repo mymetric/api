@@ -49,6 +49,9 @@ class BasicDataRow(BaseModel):
     Data: str
     Cluster: str
     Plataforma: str
+    city: str = ""
+    region: str = ""
+    country: str = ""
     Investimento: float
     Cliques: int
     Sessoes: int
@@ -378,6 +381,35 @@ class ShippingCalcAnalyticsRequest(BaseModel):
     start_date: Optional[str] = None  # YYYY-MM-DD
     end_date: Optional[str] = None    # YYYY-MM-DD
 
+# Modelos para leads_orders
+class LeadsOrdersRequest(BaseModel):
+    start_date: str
+    end_date: str
+    table_name: str
+
+class LeadsOrdersRow(BaseModel):
+    subscribe_timestamp: Optional[str] = None
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    fsm_source: Optional[str] = None
+    fsm_medium: Optional[str] = None
+    fsm_campaign: Optional[str] = None
+    transaction_id: Optional[str] = None
+    purchase_timestamp: Optional[str] = None
+    value: Optional[float] = None
+    source: Optional[str] = None
+    medium: Optional[str] = None
+    campaign: Optional[str] = None
+    days_between_subscribe_and_purchase: Optional[int] = None
+    minutes_between_subscribe_and_purchase: Optional[int] = None
+
+class LeadsOrdersResponse(BaseModel):
+    data: List[LeadsOrdersRow]
+    total_rows: int
+    summary: Dict[str, Any]
+    cache_info: Optional[Dict[str, Any]] = None
+
 def _run_shipping_calc_query(client, project_name: str, tablename: str, start_date: Optional[str], end_date: Optional[str]) -> List[ShippingCalcAnalyticsRow]:
     where_clause = ""
     if start_date and end_date:
@@ -698,6 +730,9 @@ async def get_basic_data(
                     event_date AS Data,
                     traffic_category AS Cluster,
                     platform AS Plataforma,
+                    city,
+                    region,
+                    country,
                     SUM(CASE WHEN event_name = 'paid_media' then value else 0 end) AS Investimento,
                     SUM(CASE WHEN event_name = 'paid_media' then clicks else 0 end) AS Cliques,
                     COUNTIF(event_name = 'session') AS Sessoes,
@@ -723,6 +758,9 @@ async def get_basic_data(
                     event_date AS Data,
                     traffic_category AS Cluster,
                     platform AS Plataforma,
+                    city,
+                    region,
+                    country,
                     SUM(CASE WHEN event_name = 'paid_media' then value else 0 end) AS Investimento,
                     SUM(CASE WHEN event_name = 'paid_media' then clicks else 0 end) AS Cliques,
                     COUNTIF(event_name = 'session') AS Sessoes,
@@ -784,6 +822,9 @@ async def get_basic_data(
                 Data=str(row.Data),
                 Cluster=str(row.Cluster) if row.Cluster else "Sem Categoria",
                 Plataforma=str(row.Plataforma) if row.Plataforma else "",
+                city=str(row.city) if hasattr(row, 'city') and row.city else "",
+                region=str(row.region) if hasattr(row, 'region') and row.region else "",
+                country=str(row.country) if hasattr(row, 'country') and row.country else "",
                 Investimento=safe_float(row.Investimento),
                 Cliques=int(row.Cliques or 0),
                 Sessoes=int(row.Sessoes or 0),
@@ -3334,6 +3375,199 @@ async def get_cache_stats(token: TokenData = Depends(verify_token)):
         
     except Exception as e:
         print(f"Erro ao obter estatísticas do cache: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+@metrics_router.post("/leads_orders", response_model=LeadsOrdersResponse)
+async def get_leads_orders(
+    request: LeadsOrdersRequest,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para buscar dados de leads e orders com cache de 1 hora"""
+    
+    # Parâmetros para o cache
+    cache_params = {
+        'email': token.email,
+        'start_date': request.start_date,
+        'end_date': request.end_date,
+        'table_name': request.table_name
+    }
+    
+    # Tentar buscar do cache primeiro
+    cached_data = basic_data_cache.get(**cache_params)
+    if cached_data:
+        return LeadsOrdersResponse(
+            data=cached_data['data'],
+            total_rows=cached_data['total_rows'],
+            summary=cached_data['summary'],
+            cache_info={
+                'source': 'cache',
+                'cached_at': cached_data.get('cached_at'),
+                'ttl_hours': 1
+            }
+        )
+    
+    # Se não estiver no cache, buscar do BigQuery
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        # Buscar informações do usuário
+        user_query = f"""
+        SELECT tablename, admin, access_control
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        
+        user_result = client.query(user_query, job_config=job_config)
+        user_data = list(user_result.result())
+        
+        if not user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário não encontrado"
+            )
+        
+        user_tablename = user_data[0].tablename
+        is_admin = user_data[0].admin
+        
+        # Determinar qual tabela usar
+        if is_admin and request.table_name:
+            tablename = request.table_name
+        elif user_tablename == 'all':
+            tablename = request.table_name
+        else:
+            tablename = user_tablename
+        
+        # Construir nome da tabela
+        table_name = f"dbt_join.{tablename}_leads_orders_"
+        
+        # Query para buscar dados de leads_orders
+        query = f"""
+        SELECT
+            subscribe_timestamp,
+            name,
+            phone,
+            email,
+            fsm_source,
+            fsm_medium,
+            fsm_campaign,
+            transaction_id,
+            purchase_timestamp,
+            value,
+            source,
+            medium,
+            campaign,
+            days_between_subscribe_and_purchase,
+            minutes_between_subscribe_and_purchase
+        FROM `{table_name}`
+        WHERE DATE(subscribe_timestamp) BETWEEN @start_date AND @end_date
+           OR DATE(purchase_timestamp) BETWEEN @start_date AND @end_date
+        ORDER BY subscribe_timestamp DESC
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("start_date", "STRING", request.start_date),
+                bigquery.ScalarQueryParameter("end_date", "STRING", request.end_date),
+            ]
+        )
+        
+        query_job = client.query(query, job_config=job_config)
+        results = list(query_job.result())
+        
+        # Converter resultados para o modelo
+        data = []
+        total_leads = 0
+        total_orders = 0
+        total_revenue = 0.0
+        
+        for row in results:
+            leads_row = LeadsOrdersRow(
+                subscribe_timestamp=str(row.subscribe_timestamp) if row.subscribe_timestamp else None,
+                name=str(row.name) if row.name else None,
+                phone=str(row.phone) if row.phone else None,
+                email=str(row.email) if row.email else None,
+                fsm_source=str(row.fsm_source) if row.fsm_source else None,
+                fsm_medium=str(row.fsm_medium) if row.fsm_medium else None,
+                fsm_campaign=str(row.fsm_campaign) if row.fsm_campaign else None,
+                transaction_id=str(row.transaction_id) if row.transaction_id else None,
+                purchase_timestamp=str(row.purchase_timestamp) if row.purchase_timestamp else None,
+                value=float(row.value) if row.value is not None else None,
+                source=str(row.source) if row.source else None,
+                medium=str(row.medium) if row.medium else None,
+                campaign=str(row.campaign) if row.campaign else None,
+                days_between_subscribe_and_purchase=int(row.days_between_subscribe_and_purchase) if row.days_between_subscribe_and_purchase is not None else None,
+                minutes_between_subscribe_and_purchase=int(row.minutes_between_subscribe_and_purchase) if row.minutes_between_subscribe_and_purchase is not None else None
+            )
+            data.append(leads_row)
+            
+            # Calcular métricas
+            if row.subscribe_timestamp:
+                total_leads += 1
+            if row.transaction_id:
+                total_orders += 1
+            if row.value is not None:
+                total_revenue += float(row.value)
+        
+        # Criar resumo
+        summary = {
+            "total_leads": total_leads,
+            "total_orders": total_orders,
+            "total_revenue": round(total_revenue, 2),
+            "conversion_rate": round((total_orders / total_leads * 100) if total_leads > 0 else 0, 2),
+            "periodo": f"{request.start_date} a {request.end_date}",
+            "tablename": tablename,
+            "user_access": "all" if user_tablename == 'all' else "limited"
+        }
+        
+        # Preparar resposta
+        response_data = {
+            'data': [row.dict() for row in data],
+            'total_rows': len(data),
+            'summary': summary,
+            'cached_at': datetime.now().isoformat()
+        }
+        
+        # Salvar último request
+        last_request_manager.save_last_request(
+            'leads_orders',
+            {
+                'start_date': request.start_date,
+                'end_date': request.end_date,
+                'table_name': request.table_name
+            },
+            token.email
+        )
+        
+        # Armazenar no cache
+        basic_data_cache.set(response_data, **cache_params)
+        
+        return LeadsOrdersResponse(
+            data=data,
+            total_rows=len(data),
+            summary=summary,
+            cache_info={
+                'source': 'database',
+                'cached_at': response_data['cached_at'],
+                'ttl_hours': 1
+            }
+        )
+        
+    except Exception as e:
+        print(f"Erro ao buscar dados de leads_orders: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro interno do servidor: {str(e)}"
