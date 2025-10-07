@@ -192,9 +192,9 @@ class DetailedDataRow(BaseModel):
     Receita_Paga: float
 
 class DetailedDataResponse(BaseModel):
-    data: List[DetailedDataRow]
-    total_rows: int
     summary: Dict[str, Any]
+    total_rows: int
+    data: List[DetailedDataRow]
     cache_info: Optional[Dict[str, Any]] = None
     pagination: Optional[Dict[str, Any]] = None
 
@@ -801,6 +801,7 @@ async def get_basic_data(
         total_investimento = 0
         total_receita = 0
         total_pedidos = 0
+        total_sessoes = 0
         # Totais para pedidos de assinatura
         total_pedidos_assinatura_anual_inicial = 0
         total_pedidos_assinatura_mensal_inicial = 0
@@ -851,6 +852,7 @@ async def get_basic_data(
             total_investimento += data_row.Investimento
             total_receita += data_row.Receita
             total_pedidos += data_row.Pedidos
+            total_sessoes += data_row.Sessoes
             # Calcular totais de assinatura
             total_pedidos_assinatura_anual_inicial += data_row.Pedidos_Assinatura_Anual_Inicial
             total_pedidos_assinatura_mensal_inicial += data_row.Pedidos_Assinatura_Mensal_Inicial
@@ -868,6 +870,7 @@ async def get_basic_data(
             "total_investimento": total_investimento,
             "total_receita": total_receita,
             "total_pedidos": total_pedidos,
+            "total_sessoes": total_sessoes,
             "total_pedidos_assinatura": total_pedidos_assinatura,
             "total_pedidos_assinatura_anual_inicial": total_pedidos_assinatura_anual_inicial,
             "total_pedidos_assinatura_mensal_inicial": total_pedidos_assinatura_mensal_inicial,
@@ -875,6 +878,7 @@ async def get_basic_data(
             "total_pedidos_assinatura_mensal_recorrente": total_pedidos_assinatura_mensal_recorrente,
             "roas": total_receita / total_investimento if total_investimento > 0 else 0,
             "ticket_medio": total_receita / total_pedidos if total_pedidos > 0 else 0,
+            "taxa_conversao": (total_pedidos / total_sessoes * 100) if total_sessoes > 0 else 0,
             "periodo": f"{start_date} a {end_date}",
             "tablename": tablename,
             "user_access": "all" if user_tablename == 'all' else "limited",
@@ -1699,7 +1703,78 @@ async def get_detailed_data(
         # Construir condição de data
         date_condition = f"event_date BETWEEN '{request.start_date}' AND '{request.end_date}'"
         
-        # Query principal com UNION para separar diferentes tipos de eventos
+        # Primeiro, calcular o sumário com TODOS os dados do período (sem paginação)
+        summary_query = f"""
+        WITH all_events AS (
+            SELECT
+                event_name,
+                transaction_id,
+                value,
+                shipping_value,
+                total_discounts,
+                status
+            FROM `{project_name}.dbt_join.{tablename}_events_long`
+            WHERE {date_condition}
+        )
+        SELECT
+            COUNTIF(event_name = 'session') as total_sessions,
+            COUNTIF(event_name = 'add_to_cart') as total_add_to_cart,
+            COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' THEN transaction_id END) as total_orders,
+            SUM(CASE WHEN event_name = '{attribution_model}' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) as total_revenue,
+            COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' AND status in ('paid', 'authorized') THEN transaction_id END) as total_paid_orders,
+            SUM(CASE WHEN event_name = '{attribution_model}' AND status in ('paid', 'authorized') THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) as total_paid_revenue,
+            COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' AND status in ('paid', 'authorized') THEN transaction_id END) as total_novos_clientes
+        FROM all_events
+        """
+        
+        print(f"🔍 Executando query de sumário...")
+        summary_result = client.query(summary_query)
+        summary_row = list(summary_result.result())[0]
+        
+        # Extrair valores do sumário
+        total_sessions = int(summary_row.total_sessions) if summary_row.total_sessions else 0
+        total_add_to_cart = int(summary_row.total_add_to_cart) if summary_row.total_add_to_cart else 0
+        total_orders = int(summary_row.total_orders) if summary_row.total_orders else 0
+        total_revenue = float(summary_row.total_revenue) if summary_row.total_revenue else 0.0
+        total_paid_orders = int(summary_row.total_paid_orders) if summary_row.total_paid_orders else 0
+        total_paid_revenue = float(summary_row.total_paid_revenue) if summary_row.total_paid_revenue else 0.0
+        
+        # Calcular métricas derivadas (similar ao basic-data)
+        conversion_rate = (total_orders / total_sessions * 100) if total_sessions > 0 else 0
+        add_to_cart_rate = (total_add_to_cart / total_sessions * 100) if total_sessions > 0 else 0
+        ticket_medio = total_revenue / total_orders if total_orders > 0 else 0
+        ticket_medio_pago = total_paid_revenue / total_paid_orders if total_paid_orders > 0 else 0
+        
+        # Criar sumário completo (similar ao basic-data)
+        summary = {
+            # Totais principais
+            "total_sessoes": total_sessions,
+            "total_adicoes_carrinho": total_add_to_cart,
+            "total_pedidos": total_orders,
+            "total_receita": round(total_revenue, 2),
+            "total_pedidos_pagos": total_paid_orders,
+            "total_receita_paga": round(total_paid_revenue, 2),
+            
+            # Taxas de conversão
+            "taxa_conversao": round(conversion_rate, 2),
+            "taxa_adicao_carrinho": round(add_to_cart_rate, 2),
+            "taxa_checkout": round((total_orders / total_add_to_cart * 100) if total_add_to_cart > 0 else 0, 2),
+            
+            # Ticket médio
+            "ticket_medio": round(ticket_medio, 2),
+            "ticket_medio_pago": round(ticket_medio_pago, 2),
+            
+            # Informações contextuais
+            "periodo": f"{request.start_date} a {request.end_date}",
+            "tablename": tablename,
+            "project_name": project_name,
+            "attribution_model": request.attribution_model,
+            "user_access": "all" if user_tablename == 'all' else "limited"
+        }
+        
+        print(f"✅ Sumário calculado: {total_sessions} sessões, {total_orders} pedidos, R$ {total_revenue:.2f} receita")
+        
+        # Agora executar a query paginada para os dados detalhados
         query = f"""
         WITH session_data AS (
             SELECT
@@ -1757,9 +1832,9 @@ async def get_detailed_data(
                 0 as `Sessoes`,
                 0 as `Adicoes_ao_Carrinho`,
                 COUNT(DISTINCT transaction_id) as `Pedidos`,
-                SUM(value + shipping_value) as `Receita`,
+                SUM(value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0)) as `Receita`,
                 COUNT(DISTINCT CASE WHEN status in ('paid', 'authorized') THEN transaction_id END) as `Pedidos_Pagos`,
-                SUM(CASE WHEN status in ('paid', 'authorized') THEN value + shipping_value ELSE 0 END) as `Receita_Paga`
+                SUM(CASE WHEN status in ('paid', 'authorized') THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) as `Receita_Paga`
             FROM `{project_name}.dbt_join.{tablename}_events_long`
             WHERE {date_condition} AND event_name = '{attribution_model}'
             GROUP BY event_date, Hora, source, medium, campaign, page_location, content, discount_code, traffic_category
@@ -1776,20 +1851,13 @@ async def get_detailed_data(
         """
         
         print(f"Executando query de dados detalhados com paginação: limit={limit}, offset={offset}, order_by={order_by}")
-        print(f"Query length: {len(query)}")
-        print(f"Query contains 'WITH session_data': {'WITH session_data' in query}")
-        print(f"Query contains 'UNION ALL': {'UNION ALL' in query}")
         
-        # Executar query
+        # Executar query paginada
         result = client.query(query)
         rows = list(result.result())
         
-        # Processar resultados
+        # Processar resultados paginados
         data = []
-        total_revenue = 0.0
-        total_orders = 0
-        total_sessions = 0
-        total_add_to_cart = 0
         
         for row in rows:
             data.append(DetailedDataRow(
@@ -1809,24 +1877,6 @@ async def get_detailed_data(
                 Pedidos_Pagos=int(row.Pedidos_Pagos) if row.Pedidos_Pagos else 0,
                 Receita_Paga=float(row.Receita_Paga) if row.Receita_Paga else 0.0
             ))
-            
-            total_revenue += float(row.Receita) if row.Receita else 0.0
-            total_orders += int(row.Pedidos) if row.Pedidos else 0
-            total_sessions += int(row.Sessoes) if row.Sessoes else 0
-            total_add_to_cart += int(row.Adicoes_ao_Carrinho) if row.Adicoes_ao_Carrinho else 0
-        
-        # Calcular resumo
-        summary = {
-            "total_revenue": total_revenue,
-            "total_orders": total_orders,
-            "total_sessions": total_sessions,
-            "total_add_to_cart": total_add_to_cart,
-            "conversion_rate": (total_orders / total_sessions * 100) if total_sessions > 0 else 0,
-            "add_to_cart_rate": (total_add_to_cart / total_sessions * 100) if total_sessions > 0 else 0,
-            "table_name": tablename,
-            "project_name": project_name,
-            "attribution_model": request.attribution_model
-        }
         
         # Salvar último request
         last_request_manager.save_last_request(
