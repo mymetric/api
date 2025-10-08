@@ -1591,7 +1591,7 @@ async def get_detailed_data(
     """Endpoint para buscar dados detalhados com métricas agregadas e cache de 1 hora"""
     
     # Validar limites de paginação primeiro
-    limit = min(request.limit or 10000, 50000)  # Máximo 50000 registros
+    limit = min(request.limit or 50000, 50000)  # Máximo 50000 registros
     offset = max(request.offset or 0, 0)      # Offset não pode ser negativo
     
     if request.limit and request.limit > 50000:
