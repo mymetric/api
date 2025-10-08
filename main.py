@@ -82,6 +82,10 @@ class ExperimentData(BaseModel):
     sessions: int
     transactions: int
     revenue: float
+    add_to_cart: int
+    begin_checkout: int
+    add_shipping_info: int
+    add_payment_info: int
 
 class ExperimentQuery(BaseModel):
     table_name: str
@@ -719,7 +723,11 @@ async def get_experiment_data(
             category,
             COUNT(DISTINCT CONCAT(user_pseudo_id, ga_session_id)) as sessions,
             SUM(transactions) as transactions,
-            ROUND(SUM(revenue), 2) as revenue
+            ROUND(SUM(revenue), 2) as revenue,
+            SUM(add_to_cart) as add_to_cart,
+            SUM(begin_checkout) as begin_checkout,
+            SUM(add_shipping_info) as add_shipping_info,
+            SUM(add_payment_info) as add_payment_info
         FROM `{table_name}`
         WHERE event_date BETWEEN @start_date AND @end_date
         GROUP BY 
@@ -752,7 +760,11 @@ async def get_experiment_data(
                 category=str(row.category) if row.category else "",
                 sessions=int(row.sessions) if row.sessions is not None else 0,
                 transactions=int(row.transactions) if row.transactions is not None else 0,
-                revenue=float(row.revenue) if row.revenue is not None else 0.0
+                revenue=float(row.revenue) if row.revenue is not None else 0.0,
+                add_to_cart=int(row.add_to_cart) if row.add_to_cart is not None else 0,
+                begin_checkout=int(row.begin_checkout) if row.begin_checkout is not None else 0,
+                add_shipping_info=int(row.add_shipping_info) if row.add_shipping_info is not None else 0,
+                add_payment_info=int(row.add_payment_info) if row.add_payment_info is not None else 0
             ))
         
         return experiment_data
