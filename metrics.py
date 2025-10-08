@@ -170,7 +170,7 @@ class DetailedDataRequest(BaseModel):
     end_date: str
     attribution_model: Optional[str] = "purchase"
     table_name: Optional[str] = None
-    limit: Optional[int] = 1000  # Limitar resultados
+    limit: Optional[int] = 10000  # Limitar resultados
     offset: Optional[int] = 0    # Paginação
     order_by: Optional[str] = "Pedidos"  # Campo para ordenação
 
@@ -1591,11 +1591,11 @@ async def get_detailed_data(
     """Endpoint para buscar dados detalhados com métricas agregadas e cache de 1 hora"""
     
     # Validar limites de paginação primeiro
-    limit = min(request.limit or 1000, 5000)  # Máximo 5000 registros
+    limit = min(request.limit or 10000, 50000)  # Máximo 50000 registros
     offset = max(request.offset or 0, 0)      # Offset não pode ser negativo
     
-    if request.limit and request.limit > 5000:
-        print(f"⚠️ Limite muito alto ({request.limit}), usando máximo de 5000")
+    if request.limit and request.limit > 50000:
+        print(f"⚠️ Limite muito alto ({request.limit}), usando máximo de 50000")
     if request.offset and request.offset < 0:
         print(f"⚠️ Offset negativo ({request.offset}), usando 0")
     
