@@ -80,6 +80,7 @@ class ExperimentData(BaseModel):
     experiment_variant: str
     category: str
     sessions: int
+    users: int
     transactions: int
     revenue: float
     add_to_cart: int
@@ -722,6 +723,7 @@ async def get_experiment_data(
             experiment_variant,
             category,
             COUNT(DISTINCT CONCAT(user_pseudo_id, ga_session_id)) as sessions,
+            COUNT(DISTINCT user_pseudo_id) as users,
             SUM(transactions) as transactions,
             ROUND(SUM(revenue), 2) as revenue,
             SUM(add_to_cart) as add_to_cart,
@@ -759,6 +761,7 @@ async def get_experiment_data(
                 experiment_variant=str(row.experiment_variant) if row.experiment_variant else "",
                 category=str(row.category) if row.category else "",
                 sessions=int(row.sessions) if row.sessions is not None else 0,
+                users=int(row.users) if row.users is not None else 0,
                 transactions=int(row.transactions) if row.transactions is not None else 0,
                 revenue=float(row.revenue) if row.revenue is not None else 0.0,
                 add_to_cart=int(row.add_to_cart) if row.add_to_cart is not None else 0,
