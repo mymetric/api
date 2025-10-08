@@ -1708,13 +1708,13 @@ async def get_detailed_data(
         SELECT
             event_date AS Data,
             extract(hour from created_at) as Hora,
-            source as Origem,
-            medium as `Midia`, 
-            campaign as Campanha,
-            page_location as `Pagina_de_Entrada`,
-            content as `Conteudo`,
+            coalesce(source, '(not set)') as Origem,
+            coalesce(medium, '(not set)') as `Midia`, 
+            coalesce(campaign, '(not set)') as Campanha,
+            coalesce(page_location, '(not set)') as `Pagina_de_Entrada`,
+            coalesce(content, '(not set)') as `Conteudo`,
             coalesce(discount_code, 'Sem Cupom') as `Cupom`,
-            traffic_category as `Cluster`,
+            coalesce(traffic_category, '(not set)') as `Cluster`,
             COUNTIF(event_name = 'session') as `Sessoes`,
             COUNTIF(event_name = 'add_to_cart') as `Adicoes_ao_Carrinho`,
             COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' THEN transaction_id END) as `Pedidos`,
@@ -1723,7 +1723,7 @@ async def get_detailed_data(
             SUM(CASE WHEN event_name = '{attribution_model}' AND status in ('paid', 'authorized') THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) as `Receita_Paga`
         FROM `{project_name}.dbt_join.{tablename}_events_long`
         WHERE {date_condition}
-        GROUP BY event_date, extract(hour from created_at), source, medium, campaign, page_location, content, discount_code, traffic_category
+        GROUP BY Data, Hora, Origem, Midia, Campanha, Pagina_de_Entrada, Conteudo, Cupom, Cluster
         ORDER BY {order_by} DESC, Pedidos DESC, Receita DESC, Sessoes DESC, Adicoes_ao_Carrinho DESC, Pedidos_Pagos DESC, Receita_Paga DESC, Data DESC, Hora DESC, Origem, Midia, Campanha, Cluster
         LIMIT {limit} OFFSET {offset}
         """
@@ -1735,6 +1735,7 @@ async def get_detailed_data(
         rows = list(result.result())
         
         # Calcular sumário com base nos mesmos grupos, SEM paginação
+        # IMPORTANTE: Usa EXATAMENTE a mesma lógica de GROUP BY e COALESCE da query paginada
         summary_query = f"""
         SELECT
             SUM(Sessoes) as total_sessions,
@@ -1753,7 +1754,16 @@ async def get_detailed_data(
                 SUM(CASE WHEN event_name = '{attribution_model}' AND status in ('paid', 'authorized') THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) as Receita_Paga
             FROM `{project_name}.dbt_join.{tablename}_events_long`
             WHERE {date_condition}
-            GROUP BY event_date, extract(hour from created_at), source, medium, campaign, page_location, content, discount_code, traffic_category
+            GROUP BY 
+                event_date, 
+                extract(hour from created_at), 
+                coalesce(source, '(not set)'), 
+                coalesce(medium, '(not set)'), 
+                coalesce(campaign, '(not set)'), 
+                coalesce(page_location, '(not set)'), 
+                coalesce(content, '(not set)'), 
+                coalesce(discount_code, 'Sem Cupom'), 
+                coalesce(traffic_category, '(not set)')
         )
         """
         
@@ -1806,19 +1816,18 @@ async def get_detailed_data(
         
         # Processar resultados paginados
         data = []
-        data = []
         
         for row in rows:
             data.append(DetailedDataRow(
                 Data=str(row.Data),
                 Hora=int(row.Hora) if row.Hora else 0,
-                Origem=str(row.Origem) if row.Origem else '',
-                Midia=str(row.Midia) if row.Midia else '',
-                Campanha=str(row.Campanha) if row.Campanha else '',
-                Pagina_de_Entrada=str(row.Pagina_de_Entrada) if row.Pagina_de_Entrada else '',
-                Conteudo=str(row.Conteudo) if row.Conteudo else '',
-                Cupom=str(row.Cupom) if row.Cupom else '',
-                Cluster=str(row.Cluster) if row.Cluster else '',
+                Origem=str(row.Origem) if row.Origem else '(not set)',
+                Midia=str(row.Midia) if row.Midia else '(not set)',
+                Campanha=str(row.Campanha) if row.Campanha else '(not set)',
+                Pagina_de_Entrada=str(row.Pagina_de_Entrada) if row.Pagina_de_Entrada else '(not set)',
+                Conteudo=str(row.Conteudo) if row.Conteudo else '(not set)',
+                Cupom=str(row.Cupom) if row.Cupom else 'Sem Cupom',
+                Cluster=str(row.Cluster) if row.Cluster else '(not set)',
                 Sessoes=int(row.Sessoes) if row.Sessoes else 0,
                 Adicoes_ao_Carrinho=int(row.Adicoes_ao_Carrinho) if row.Adicoes_ao_Carrinho else 0,
                 Pedidos=int(row.Pedidos) if row.Pedidos else 0,
