@@ -1724,7 +1724,7 @@ async def get_detailed_data(
         FROM `{project_name}.dbt_join.{tablename}_events_long`
         WHERE {date_condition}
         GROUP BY event_date, extract(hour from created_at), source, medium, campaign, page_location, content, discount_code, traffic_category
-        ORDER BY {order_by} DESC
+        ORDER BY {order_by} DESC, Sessoes DESC, Receita DESC, Data DESC, Hora DESC
         LIMIT {limit} OFFSET {offset}
         """
         
