@@ -360,6 +360,11 @@ class ShippingCalcAnalyticsRow(BaseModel):
     event_date: Optional[str] = None
     zipcode: Optional[str] = None
     zipcode_region: Optional[str] = None
+    item_id: Optional[str] = None
+    item_name: Optional[str] = None
+    item_brand: Optional[str] = None
+    item_variant: Optional[str] = None
+    item_category: Optional[str] = None
     calculations: Optional[int] = None
     calculations_freight_unavailable: Optional[int] = None
     transactions: Optional[int] = None
@@ -423,6 +428,11 @@ def _run_shipping_calc_query(client, project_name: str, tablename: str, start_da
         "  event_date,\n"
         "  zipcode,\n"
         "  zipcode_region,\n"
+        "  item_id,\n"
+        "  item_name,\n"
+        "  item_brand,\n"
+        "  item_variant,\n"
+        "  item_category,\n"
         "  calculations,\n"
         "  calculations_freight_unavailable,\n"
         "  transactions,\n"
@@ -441,6 +451,11 @@ def _run_shipping_calc_query(client, project_name: str, tablename: str, start_da
             event_date=str(row.event_date) if getattr(row, "event_date", None) is not None else None,
             zipcode=str(row.zipcode) if getattr(row, "zipcode", None) is not None else None,
             zipcode_region=str(row.zipcode_region) if getattr(row, "zipcode_region", None) is not None else None,
+            item_id=str(row.item_id) if getattr(row, "item_id", None) is not None else None,
+            item_name=str(row.item_name) if getattr(row, "item_name", None) is not None else None,
+            item_brand=str(row.item_brand) if getattr(row, "item_brand", None) is not None else None,
+            item_variant=str(row.item_variant) if getattr(row, "item_variant", None) is not None else None,
+            item_category=str(row.item_category) if getattr(row, "item_category", None) is not None else None,
             calculations=int(row.calculations) if getattr(row, "calculations", None) is not None else None,
             calculations_freight_unavailable=int(row.calculations_freight_unavailable) if getattr(row, "calculations_freight_unavailable", None) is not None else None,
             transactions=int(row.transactions) if getattr(row, "transactions", None) is not None else None,
