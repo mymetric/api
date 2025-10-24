@@ -759,14 +759,14 @@ async def get_basic_data(
                     COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN transaction_id END) AS Novos_Clientes,
                     SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Novos_Clientes,
                     -- Métricas de assinatura
-                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'first annual subscription' THEN transaction_id END) AS Pedidos_Assinatura_Anual_Inicial,
-                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'first annual subscription' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Anual_Inicial,
-                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'first montly subscription' THEN transaction_id END) AS Pedidos_Assinatura_Mensal_Inicial,
-                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'first montly subscription' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Mensal_Inicial,
-                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring annual subscription' THEN transaction_id END) AS Pedidos_Assinatura_Anual_Recorrente,
-                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring annual subscription' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Anual_Recorrente,
-                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring montly subscription' THEN transaction_id END) AS Pedidos_Assinatura_Mensal_Recorrente,
-                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring montly subscription' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Mensal_Recorrente"""
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'first annual subscription' and status = 'paid' THEN transaction_id END) AS Pedidos_Assinatura_Anual_Inicial,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'first annual subscription' and status = 'paid' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Anual_Inicial,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'first montly subscription' and status = 'paid' THEN transaction_id END) AS Pedidos_Assinatura_Mensal_Inicial,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'first montly subscription' and status = 'paid' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Mensal_Inicial,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring annual subscription' and status = 'paid' THEN transaction_id END) AS Pedidos_Assinatura_Anual_Recorrente,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring annual subscription' and status = 'paid' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Anual_Recorrente,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring montly subscription' and status = 'paid' THEN transaction_id END) AS Pedidos_Assinatura_Mensal_Recorrente,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring montly subscription' and status = 'paid' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Mensal_Recorrente"""
         else:
             base_query = f"""
                 SELECT
@@ -787,14 +787,14 @@ async def get_basic_data(
                     COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN transaction_id END) AS Novos_Clientes,
                     SUM(CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') and transaction_no = 1 THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Novos_Clientes,
                     -- Métricas de assinatura
-                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'first annual subscription' THEN transaction_id END) AS Pedidos_Assinatura_Anual_Inicial,
-                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'first annual subscription' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Anual_Inicial,
-                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'first montly subscription' THEN transaction_id END) AS Pedidos_Assinatura_Mensal_Inicial,
-                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'first montly subscription' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Mensal_Inicial,
-                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring annual subscription' THEN transaction_id END) AS Pedidos_Assinatura_Anual_Recorrente,
-                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring annual subscription' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Anual_Recorrente,
-                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring montly subscription' THEN transaction_id END) AS Pedidos_Assinatura_Mensal_Recorrente,
-                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring montly subscription' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Mensal_Recorrente"""
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'first annual subscription' and status = 'paid' THEN transaction_id END) AS Pedidos_Assinatura_Anual_Inicial,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'first annual subscription' and status = 'paid' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Anual_Inicial,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'first montly subscription' and status = 'paid' THEN transaction_id END) AS Pedidos_Assinatura_Mensal_Inicial,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'first montly subscription' and status = 'paid' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Mensal_Inicial,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring annual subscription' and status = 'paid' THEN transaction_id END) AS Pedidos_Assinatura_Anual_Recorrente,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring annual subscription' and status = 'paid' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Anual_Recorrente,
+                    COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring montly subscription' and status = 'paid' THEN transaction_id END) AS Pedidos_Assinatura_Mensal_Recorrente,
+                    SUM(CASE WHEN event_name = '{attribution_model}' and order_type = 'recurring montly subscription' and status = 'paid' THEN value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) ELSE 0 END) AS Receita_Assinatura_Mensal_Recorrente"""
 
         # Query completa
         query = f"""
