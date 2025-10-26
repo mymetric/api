@@ -394,6 +394,8 @@ class LeadsOrdersRequest(BaseModel):
     table_name: Optional[str] = None
     last_cache: Optional[bool] = False
     force_refresh: Optional[bool] = False
+    limit: Optional[int] = 5000
+    offset: Optional[int] = 0
 
 class LeadsOrdersRow(BaseModel):
     subscribe_timestamp: Optional[str] = None
@@ -417,6 +419,7 @@ class LeadsOrdersResponse(BaseModel):
     total_rows: int
     summary: Dict[str, Any]
     cache_info: Optional[Dict[str, Any]] = None
+    pagination: Optional[Dict[str, Any]] = None
 
 def _run_shipping_calc_query(client, project_name: str, tablename: str, start_date: Optional[str], end_date: Optional[str]) -> List[ShippingCalcAnalyticsRow]:
     where_clause = ""
@@ -1630,30 +1633,34 @@ async def get_detailed_data(
         order_by = 'Pedidos'
         print(f"⚠️ Campo de ordenação '{request.order_by}' inválido, usando 'Pedidos'")
     
-    # Verificar cache primeiro
+    # Verificar cache primeiro (sem paginação - armazena todos os dados)
     cache_params = {
         'email': token.email, 
         'start_date': request.start_date, 
         'end_date': request.end_date, 
         'table_name': request.table_name,
         'attribution_model': request.attribution_model,
-        'limit': limit,
-        'offset': offset,
         'order_by': order_by
     }
     
     cached_data = detailed_data_cache.get(**cache_params)
     if cached_data:
+        # Aplicar paginação aos dados do cache
+        all_cached_data = cached_data['all_data']
+        start_idx = offset
+        end_idx = start_idx + limit
+        paginated_data = all_cached_data[start_idx:end_idx]
+        
         return DetailedDataResponse(
-            data=cached_data['data'], 
-            total_rows=cached_data['total_rows'], 
+            data=paginated_data,
+            total_rows=cached_data['total_rows'],
             summary=cached_data['summary'],
             cache_info={'source': 'cache', 'cached_at': cached_data.get('cached_at'), 'ttl_hours': 4},
             pagination={
                 'limit': limit,
                 'offset': offset,
                 'order_by': order_by,
-                'has_more': len(cached_data['data']) == limit
+                'has_more': len(paginated_data) == limit
             }
         )
     
@@ -1749,12 +1756,11 @@ async def get_detailed_data(
         WHERE {date_condition}
         GROUP BY Data, Hora, Origem, Midia, Campanha, Pagina_de_Entrada, Conteudo, Cupom, Cluster
         ORDER BY {order_by} DESC, Pedidos DESC, Receita DESC, Sessoes DESC, Adicoes_ao_Carrinho DESC, Pedidos_Pagos DESC, Receita_Paga DESC, Data DESC, Hora DESC, Origem, Midia, Campanha, Cluster
-        LIMIT {limit} OFFSET {offset}
         """
         
-        print(f"Executando query de dados detalhados com paginação: limit={limit}, offset={offset}, order_by={order_by}")
+        print(f"Executando query de dados detalhados (sem paginação): order_by={order_by}")
         
-        # Executar query
+        # Executar query (busca TODOS os dados)
         result = client.query(query)
         rows = list(result.result())
         
@@ -1838,11 +1844,11 @@ async def get_detailed_data(
         
         print(f"✅ Sumário calculado: {total_sessions} sessões, {total_orders} pedidos, R$ {total_revenue:.2f} receita")
         
-        # Processar resultados paginados
-        data = []
+        # Processar TODOS os resultados primeiro
+        all_data = []
         
         for row in rows:
-            data.append(DetailedDataRow(
+            all_data.append(DetailedDataRow(
                 Data=str(row.Data),
                 Hora=int(row.Hora) if row.Hora else 0,
                 Origem=str(row.Origem) if row.Origem else '(not set)',
@@ -1860,6 +1866,11 @@ async def get_detailed_data(
                 Receita_Paga=float(row.Receita_Paga) if row.Receita_Paga else 0.0
             ))
         
+        # Aplicar paginação aos dados completos
+        start_idx = offset
+        end_idx = start_idx + limit
+        data = all_data[start_idx:end_idx]
+        
         # Salvar último request
         last_request_manager.save_last_request(
             'detailed-data',
@@ -1875,10 +1886,10 @@ async def get_detailed_data(
             token.email
         )
         
-        # Preparar dados para cache
+        # Preparar dados para cache (armazenar TODOS os dados)
         response_data = {
-            'data': [row.dict() for row in data],
-            'total_rows': len(data),
+            'all_data': [row.dict() for row in all_data],  # Todos os dados
+            'total_rows': len(all_data),  # Total de registros
             'summary': summary,
             'cached_at': datetime.now().isoformat()
         }
@@ -1888,7 +1899,7 @@ async def get_detailed_data(
         
         return DetailedDataResponse(
             data=data,
-            total_rows=len(data),
+            total_rows=len(all_data),  # Total de todos os dados
             summary=summary,
             cache_info={'source': 'database', 'cached_at': response_data['cached_at'], 'ttl_hours': 4},
             pagination={
@@ -3125,6 +3136,8 @@ async def execute_last_request(endpoint: str, request_data: Dict[str, Any], toke
             table_name: Optional[str] = None
             last_cache: Optional[bool] = False
             force_refresh: Optional[bool] = False
+            limit: Optional[int] = 5000
+            offset: Optional[int] = 0
         
         temp_request = TempRequest(**request_data)
         # Garantir que last_cache seja False para evitar loop infinito
@@ -3459,7 +3472,7 @@ async def get_leads_orders(
                 detail="start_date e end_date são obrigatórios quando last_cache é false"
             )
     
-    # Parâmetros para o cache
+    # Parâmetros para o cache (sem paginação - armazena todos os dados)
     cache_params = {
         'email': token.email,
         'start_date': request.start_date,
@@ -3471,14 +3484,25 @@ async def get_leads_orders(
     if not request.force_refresh:
         cached_data = leads_orders_cache.get(**cache_params)
         if cached_data:
+            # Aplicar paginação aos dados do cache
+            all_cached_data = cached_data['all_data']
+            start_idx = request.offset
+            end_idx = start_idx + request.limit
+            paginated_data = all_cached_data[start_idx:end_idx]
+            
             return LeadsOrdersResponse(
-                data=cached_data['data'],
+                data=paginated_data,
                 total_rows=cached_data['total_rows'],
                 summary=cached_data['summary'],
                 cache_info={
                     'source': 'cache',
                     'cached_at': cached_data.get('cached_at'),
                     'ttl_hours': 168  # 7 dias
+                },
+                pagination={
+                    'limit': request.limit,
+                    'offset': request.offset,
+                    'has_more': len(paginated_data) == request.limit
                 }
             )
     
@@ -3524,10 +3548,13 @@ async def get_leads_orders(
         else:
             tablename = user_tablename
         
-        # Construir nome da tabela
-        table_name = f"dbt_join.{tablename}_leads_orders_"
+        # Determinar projeto
+        project_name = get_project_name(tablename)
         
-        # Query para buscar dados de leads_orders
+        # Construir nome da tabela
+        table_name = f"{project_name}.dbt_join.{tablename}_leads_orders_"
+        
+        # Query para buscar dados de leads_orders (sem LIMIT/OFFSET)
         query = f"""
         SELECT
             subscribe_timestamp,
@@ -3561,8 +3588,8 @@ async def get_leads_orders(
         query_job = client.query(query, job_config=job_config)
         results = list(query_job.result())
         
-        # Converter resultados para o modelo
-        data = []
+        # Converter TODOS os resultados para o modelo
+        all_data = []
         total_leads = 0
         total_orders = 0
         total_revenue = 0.0
@@ -3585,7 +3612,7 @@ async def get_leads_orders(
                 days_between_subscribe_and_purchase=int(row.days_between_subscribe_and_purchase) if row.days_between_subscribe_and_purchase is not None else None,
                 minutes_between_subscribe_and_purchase=int(row.minutes_between_subscribe_and_purchase) if row.minutes_between_subscribe_and_purchase is not None else None
             )
-            data.append(leads_row)
+            all_data.append(leads_row)
             
             # Calcular métricas
             if row.subscribe_timestamp:
@@ -3594,6 +3621,11 @@ async def get_leads_orders(
                 total_orders += 1
             if row.value is not None:
                 total_revenue += float(row.value)
+        
+        # Aplicar paginação aos dados completos
+        start_idx = request.offset
+        end_idx = start_idx + request.limit
+        data = all_data[start_idx:end_idx]
         
         # Criar resumo
         summary = {
@@ -3606,10 +3638,10 @@ async def get_leads_orders(
             "user_access": "all" if user_tablename == 'all' else "limited"
         }
         
-        # Preparar resposta
+        # Preparar resposta (armazenar TODOS os dados no cache)
         response_data = {
-            'data': [row.dict() for row in data],
-            'total_rows': len(data),
+            'all_data': [row.dict() for row in all_data],  # Todos os dados
+            'total_rows': len(all_data),  # Total de registros
             'summary': summary,
             'cached_at': datetime.now().isoformat()
         }
@@ -3620,7 +3652,9 @@ async def get_leads_orders(
             {
                 'start_date': request.start_date,
                 'end_date': request.end_date,
-                'table_name': request.table_name
+                'table_name': request.table_name,
+                'limit': request.limit,
+                'offset': request.offset
             },
             token.email
         )
@@ -3636,6 +3670,11 @@ async def get_leads_orders(
                 'source': 'database',
                 'cached_at': response_data['cached_at'],
                 'ttl_hours': 168  # 7 dias
+            },
+            pagination={
+                'limit': request.limit,
+                'offset': request.offset,
+                'has_more': len(data) == request.limit
             }
         )
         
