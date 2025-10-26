@@ -11,7 +11,7 @@ import os
 import math
 
 from utils import verify_token, TokenData, get_bigquery_client
-from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, product_trend_cache, ads_campaigns_results_cache, realtime_cache, last_request_manager
+from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, product_trend_cache, ads_campaigns_results_cache, realtime_cache, leads_orders_cache, last_request_manager
 
 # Router para métricas
 metrics_router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -3415,7 +3415,7 @@ async def get_leads_orders(
     request: LeadsOrdersRequest,
     token: TokenData = Depends(verify_token)
 ):
-    """Endpoint para buscar dados de leads e orders com cache de 1 hora"""
+    """Endpoint para buscar dados de leads e orders com cache de 24 horas"""
     
     # Parâmetros para o cache
     cache_params = {
@@ -3426,7 +3426,7 @@ async def get_leads_orders(
     }
     
     # Tentar buscar do cache primeiro
-    cached_data = basic_data_cache.get(**cache_params)
+    cached_data = leads_orders_cache.get(**cache_params)
     if cached_data:
         return LeadsOrdersResponse(
             data=cached_data['data'],
@@ -3435,7 +3435,7 @@ async def get_leads_orders(
             cache_info={
                 'source': 'cache',
                 'cached_at': cached_data.get('cached_at'),
-                'ttl_hours': 1
+                'ttl_hours': 24
             }
         )
     
@@ -3583,7 +3583,7 @@ async def get_leads_orders(
         )
         
         # Armazenar no cache
-        basic_data_cache.set(response_data, **cache_params)
+        leads_orders_cache.set(response_data, **cache_params)
         
         return LeadsOrdersResponse(
             data=data,
@@ -3592,7 +3592,7 @@ async def get_leads_orders(
             cache_info={
                 'source': 'database',
                 'cached_at': response_data['cached_at'],
-                'ttl_hours': 1
+                'ttl_hours': 24
             }
         )
         
