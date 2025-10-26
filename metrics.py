@@ -56,6 +56,7 @@ class BasicDataRow(BaseModel):
     Cliques: int
     Sessoes: int
     Adicoes_ao_Carrinho: int
+    Leads: int = 0
     Pedidos: int
     Receita: float
     Pedidos_Pagos: int
@@ -752,6 +753,7 @@ async def get_basic_data(
                     SUM(CASE WHEN event_name = 'paid_media' then clicks else 0 end) AS Cliques,
                     COUNTIF(event_name = 'session') AS Sessoes,
                     COUNTIF(event_name = 'add_to_cart') AS Adicoes_ao_Carrinho,
+                    COUNTIF(event_name = 'lead') AS Leads,
                     COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' then transaction_id end) AS Pedidos,
                     SUM(CASE WHEN event_name = '{attribution_model}' then value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) end) AS Receita,
                     COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN transaction_id END) AS Pedidos_Pagos,
@@ -780,6 +782,7 @@ async def get_basic_data(
                     SUM(CASE WHEN event_name = 'paid_media' then clicks else 0 end) AS Cliques,
                     COUNTIF(event_name = 'session') AS Sessoes,
                     COUNTIF(event_name = 'add_to_cart') AS Adicoes_ao_Carrinho,
+                    COUNTIF(event_name = 'lead') AS Leads,
                     COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' then transaction_id end) AS Pedidos,
                     SUM(CASE WHEN event_name = '{attribution_model}' then value - coalesce(total_discounts, 0) + coalesce(shipping_value, 0) end) AS Receita,
                     COUNT(DISTINCT CASE WHEN event_name = '{attribution_model}' and status in ('paid', 'authorized') THEN transaction_id END) AS Pedidos_Pagos,
@@ -817,6 +820,7 @@ async def get_basic_data(
         total_receita = 0
         total_pedidos = 0
         total_sessoes = 0
+        total_leads = 0
         # Totais para pedidos de assinatura
         total_pedidos_assinatura_anual_inicial = 0
         total_pedidos_assinatura_mensal_inicial = 0
@@ -845,6 +849,7 @@ async def get_basic_data(
                 Cliques=int(row.Cliques or 0),
                 Sessoes=int(row.Sessoes or 0),
                 Adicoes_ao_Carrinho=int(row.Adicoes_ao_Carrinho or 0),
+                Leads=int(row.Leads or 0),
                 Pedidos=int(row.Pedidos or 0),
                 Receita=safe_float(row.Receita),
                 Pedidos_Pagos=int(row.Pedidos_Pagos or 0),
@@ -868,6 +873,7 @@ async def get_basic_data(
             total_receita += data_row.Receita
             total_pedidos += data_row.Pedidos
             total_sessoes += data_row.Sessoes
+            total_leads += data_row.Leads
             # Calcular totais de assinatura
             total_pedidos_assinatura_anual_inicial += data_row.Pedidos_Assinatura_Anual_Inicial
             total_pedidos_assinatura_mensal_inicial += data_row.Pedidos_Assinatura_Mensal_Inicial
@@ -886,6 +892,7 @@ async def get_basic_data(
             "total_receita": total_receita,
             "total_pedidos": total_pedidos,
             "total_sessoes": total_sessoes,
+            "total_leads": total_leads,
             "total_pedidos_assinatura": total_pedidos_assinatura,
             "total_pedidos_assinatura_anual_inicial": total_pedidos_assinatura_anual_inicial,
             "total_pedidos_assinatura_mensal_inicial": total_pedidos_assinatura_mensal_inicial,
