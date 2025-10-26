@@ -415,9 +415,10 @@ class LeadsOrdersRow(BaseModel):
     minutes_between_subscribe_and_purchase: Optional[int] = None
 
 class LeadsOrdersResponse(BaseModel):
+    summary: Dict[str, Any]
     data: List[LeadsOrdersRow]
     total_rows: int
-    summary: Dict[str, Any]
+    total_records: int  # Total de registros antes da paginação
     cache_info: Optional[Dict[str, Any]] = None
     pagination: Optional[Dict[str, Any]] = None
 
@@ -3491,9 +3492,10 @@ async def get_leads_orders(
             paginated_data = all_cached_data[start_idx:end_idx]
             
             return LeadsOrdersResponse(
-                data=paginated_data,
-                total_rows=cached_data['total_rows'],
                 summary=cached_data['summary'],
+                data=paginated_data,
+                total_rows=len(paginated_data),  # Registros nesta página
+                total_records=cached_data['total_rows'],  # Total de registros da query completa
                 cache_info={
                     'source': 'cache',
                     'cached_at': cached_data.get('cached_at'),
@@ -3593,6 +3595,9 @@ async def get_leads_orders(
         total_leads = 0
         total_orders = 0
         total_revenue = 0.0
+        distinct_emails = set()
+        distinct_emails_with_purchase = set()
+        distinct_emails_with_purchase_no_lead = set()
         
         for row in results:
             leads_row = LeadsOrdersRow(
@@ -3621,6 +3626,18 @@ async def get_leads_orders(
                 total_orders += 1
             if row.value is not None:
                 total_revenue += float(row.value)
+            
+            # Calcular emails distintos
+            if row.email:
+                distinct_emails.add(row.email)
+                
+                # Email com compra (transaction_id)
+                if row.transaction_id:
+                    distinct_emails_with_purchase.add(row.email)
+                    
+                    # Email com compra mas SEM lead (sem subscribe_timestamp)
+                    if not row.subscribe_timestamp:
+                        distinct_emails_with_purchase_no_lead.add(row.email)
         
         # Aplicar paginação aos dados completos
         start_idx = request.offset
@@ -3632,7 +3649,10 @@ async def get_leads_orders(
             "total_leads": total_leads,
             "total_orders": total_orders,
             "total_revenue": round(total_revenue, 2),
-            "conversion_rate": round((total_orders / total_leads * 100) if total_leads > 0 else 0, 2),
+            "total_distinct_emails": len(distinct_emails),
+            "total_distinct_emails_with_purchase": len(distinct_emails_with_purchase),
+            "total_distinct_emails_with_purchase_no_lead": len(distinct_emails_with_purchase_no_lead),
+            "total_distinct_emails_without_purchase": len(distinct_emails) - len(distinct_emails_with_purchase),
             "periodo": f"{request.start_date} a {request.end_date}",
             "tablename": tablename,
             "user_access": "all" if user_tablename == 'all' else "limited"
@@ -3663,9 +3683,10 @@ async def get_leads_orders(
         leads_orders_cache.set(response_data, **cache_params)
         
         return LeadsOrdersResponse(
-            data=data,
-            total_rows=len(data),
             summary=summary,
+            data=data,
+            total_rows=len(data),  # Registros nesta página
+            total_records=len(all_data),  # Total de registros da query completa
             cache_info={
                 'source': 'database',
                 'cached_at': response_data['cached_at'],
