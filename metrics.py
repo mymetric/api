@@ -389,9 +389,11 @@ class ShippingCalcAnalyticsRequest(BaseModel):
 
 # Modelos para leads_orders
 class LeadsOrdersRequest(BaseModel):
-    start_date: str
-    end_date: str
-    table_name: str
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    table_name: Optional[str] = None
+    last_cache: Optional[bool] = False
+    force_refresh: Optional[bool] = False
 
 class LeadsOrdersRow(BaseModel):
     subscribe_timestamp: Optional[str] = None
@@ -3115,6 +3117,20 @@ async def execute_last_request(endpoint: str, request_data: Dict[str, Any], toke
         temp_request.last_cache = False
         return await get_ads_creatives_results(temp_request, token)
     
+    elif endpoint == "leads_orders":
+        from pydantic import BaseModel
+        class TempRequest(BaseModel):
+            start_date: Optional[str] = None
+            end_date: Optional[str] = None
+            table_name: Optional[str] = None
+            last_cache: Optional[bool] = False
+            force_refresh: Optional[bool] = False
+        
+        temp_request = TempRequest(**request_data)
+        # Garantir que last_cache seja False para evitar loop infinito
+        temp_request.last_cache = False
+        return await get_leads_orders(temp_request, token)
+    
     elif endpoint == "realtime":
         from pydantic import BaseModel
         class TempRequest(BaseModel):
@@ -3415,7 +3431,33 @@ async def get_leads_orders(
     request: LeadsOrdersRequest,
     token: TokenData = Depends(verify_token)
 ):
-    """Endpoint para buscar dados de leads e orders com cache de 24 horas"""
+    """Endpoint para buscar dados de leads e orders com cache de 7 dias"""
+    
+    # Se last_cache for True, buscar o último request salvo específico por table_name
+    if request.last_cache:
+        if not request.table_name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="table_name é obrigatório quando last_cache é true"
+            )
+        
+        last_request = last_request_manager.get_last_request('leads_orders', request.table_name)
+        if last_request:
+            # Executar o último request salvo (se o usuário tem acesso à tabela, pode ver requests de qualquer usuário)
+            return await execute_last_request('leads_orders', last_request['request_data'], token)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Nenhum último request encontrado para a tabela '{request.table_name}'"
+            )
+    
+    # Validação para request normal (quando last_cache é false)
+    if not request.last_cache:
+        if not request.start_date or not request.end_date:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="start_date e end_date são obrigatórios quando last_cache é false"
+            )
     
     # Parâmetros para o cache
     cache_params = {
@@ -3425,19 +3467,20 @@ async def get_leads_orders(
         'table_name': request.table_name
     }
     
-    # Tentar buscar do cache primeiro
-    cached_data = leads_orders_cache.get(**cache_params)
-    if cached_data:
-        return LeadsOrdersResponse(
-            data=cached_data['data'],
-            total_rows=cached_data['total_rows'],
-            summary=cached_data['summary'],
-            cache_info={
-                'source': 'cache',
-                'cached_at': cached_data.get('cached_at'),
-                'ttl_hours': 24
-            }
-        )
+    # Tentar buscar do cache primeiro (apenas se force_refresh for False)
+    if not request.force_refresh:
+        cached_data = leads_orders_cache.get(**cache_params)
+        if cached_data:
+            return LeadsOrdersResponse(
+                data=cached_data['data'],
+                total_rows=cached_data['total_rows'],
+                summary=cached_data['summary'],
+                cache_info={
+                    'source': 'cache',
+                    'cached_at': cached_data.get('cached_at'),
+                    'ttl_hours': 168  # 7 dias
+                }
+            )
     
     # Se não estiver no cache, buscar do BigQuery
     client = get_bigquery_client()
@@ -3592,7 +3635,7 @@ async def get_leads_orders(
             cache_info={
                 'source': 'database',
                 'cached_at': response_data['cached_at'],
-                'ttl_hours': 24
+                'ttl_hours': 168  # 7 dias
             }
         )
         
