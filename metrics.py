@@ -3457,8 +3457,13 @@ async def get_leads_orders(
         
         last_request = last_request_manager.get_last_request('leads_orders', request.table_name)
         if last_request:
-            # Executar o último request salvo (se o usuário tem acesso à tabela, pode ver requests de qualquer usuário)
-            return await execute_last_request('leads_orders', last_request['request_data'], token)
+            # Usar os parâmetros do último request, mas permitir override de limit/offset
+            last_request_data = last_request['request_data'].copy()
+            last_request_data['limit'] = request.limit
+            last_request_data['offset'] = request.offset
+            
+            # Executar o último request salvo com os novos parâmetros de paginação
+            return await execute_last_request('leads_orders', last_request_data, token)
         else:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
