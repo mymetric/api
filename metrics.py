@@ -3504,7 +3504,7 @@ async def get_leads_orders(
                 pagination={
                     'limit': request.limit,
                     'offset': request.offset,
-                    'has_more': len(paginated_data) == request.limit
+                    'has_more': request.offset + request.limit < cached_data['total_rows']
                 }
             )
     
@@ -3695,7 +3695,7 @@ async def get_leads_orders(
             pagination={
                 'limit': request.limit,
                 'offset': request.offset,
-                'has_more': len(data) == request.limit
+                'has_more': request.offset + request.limit < len(all_data)
             }
         )
         
