@@ -893,6 +893,16 @@ async def get_basic_data(
                                    total_pedidos_assinatura_anual_recorrente + 
                                    total_pedidos_assinatura_mensal_recorrente)
         
+        # Recalcular total de sessões com uma query agregada direta, garantindo consistência com detailed-data
+        sessions_summary_query = f"""
+        SELECT COUNTIF(event_name = 'session') AS total_sessions
+        FROM `{project_name}.dbt_join.{tablename}_events_long`
+        WHERE {date_condition}
+        """
+        sessions_result = client.query(sessions_summary_query)
+        sessions_row = list(sessions_result.result())[0]
+        total_sessoes = int(sessions_row.total_sessions) if sessions_row.total_sessions else 0
+
         # Criar resumo
         summary = {
             "total_investimento": total_investimento,
