@@ -150,6 +150,7 @@ class OrdersResponse(BaseModel):
     data: List[OrderRow]
     total_rows: int
     summary: Dict[str, Any]
+    pagination: Optional[Dict[str, Any]] = None
 
 # Modelos para metas do usuário
 class UserGoalsRequest(BaseModel):
@@ -1176,14 +1177,12 @@ async def get_orders(
 ):
     """Endpoint para buscar orders detalhados com cache de 1 hora"""
     
-    # Parâmetros para o cache
+    # Parâmetros para o cache (sem paginação - armazena todos os dados)
     cache_params = {
         'email': token.email,
         'start_date': request.start_date,
         'end_date': request.end_date,
         'table_name': request.table_name,
-        'limit': request.limit,
-        'offset': request.offset,
         'traffic_category': request.traffic_category,
         'fs_traffic_category': request.fs_traffic_category,
         'fsm_traffic_category': request.fsm_traffic_category
@@ -1192,10 +1191,21 @@ async def get_orders(
     # Tentar buscar do cache primeiro
     cached_data = orders_cache.get(**cache_params)
     if cached_data:
+        # Aplicar paginação aos dados do cache
+        all_cached_data = cached_data['all_data']
+        start_idx = request.offset
+        end_idx = start_idx + request.limit
+        paginated_data = all_cached_data[start_idx:end_idx]
+        
         return OrdersResponse(
-            data=cached_data['data'],
+            data=paginated_data,
             total_rows=cached_data['total_rows'],
-            summary=cached_data['summary']
+            summary=cached_data['summary'],
+            pagination={
+                'limit': request.limit,
+                'offset': request.offset,
+                'has_more': request.offset + request.limit < cached_data['total_rows']
+            }
         )
     
     # Se não estiver no cache, buscar do BigQuery
@@ -1256,28 +1266,7 @@ async def get_orders(
         # Determinar projeto
         project_name = get_project_name(tablename)
         
-        # Query de teste para verificar estrutura da tabela
-        test_query = f"""
-        SELECT *
-        FROM `{project_name}.dbt_join.{tablename}_orders_sessions`
-        WHERE date(created_at) BETWEEN '{request.start_date}' AND '{request.end_date}'
-        LIMIT 1
-        """
-        
-        print(f"=== TESTE: Verificando estrutura da tabela ===")
-        print(f"Executando query de teste: {test_query}")
-        
-        test_result = client.query(test_query)
-        test_rows = list(test_result.result())
-        
-        if test_rows:
-            test_row = test_rows[0]
-            print(f"Campos disponíveis na tabela: {list(test_row.keys())}")
-            print(f"Primeira linha completa: {dict(test_row)}")
-        else:
-            print("Nenhum resultado encontrado na tabela")
-        
-        print(f"=== FIM DO TESTE ===")
+        # (removido) Query de teste e logs de depuração
         
         # Construir condições de filtro para traffic_category
         filter_conditions = [f"date(created_at) BETWEEN '{request.start_date}' AND '{request.end_date}'"]
@@ -1330,8 +1319,6 @@ async def get_orders(
         FROM `{project_name}.dbt_join.{tablename}_orders_sessions`
         WHERE {where_clause}
         ORDER BY created_at DESC
-        LIMIT {request.limit}
-        OFFSET {request.offset}
     """
         
         print(f"=== QUERY PRINCIPAL ===")
@@ -1432,10 +1419,10 @@ async def get_orders(
             }
         }
         
-        # Preparar resposta
+        # Preparar dados para cache (armazenar TODOS os dados)
         response_data = {
-            'data': [row.dict() for row in data],
-            'total_rows': len(data),
+            'all_data': [row.dict() for row in data],  # Todos os dados
+            'total_rows': len(data),  # Total de registros
             'summary': summary,
             'cached_at': datetime.now().isoformat()
         }
@@ -1459,10 +1446,20 @@ async def get_orders(
         # Armazenar no cache
         orders_cache.set(response_data, **cache_params)
         
+        # Aplicar paginação aos dados antes de retornar
+        start_idx = request.offset
+        end_idx = start_idx + request.limit
+        paginated_data = data[start_idx:end_idx]
+        
         return OrdersResponse(
-            data=data,
-            total_rows=len(data),
-            summary=summary
+            data=paginated_data,
+            total_rows=len(data),  # Total de todos os dados
+            summary=summary,
+            pagination={
+                'limit': request.limit,
+                'offset': request.offset,
+                'has_more': request.offset + request.limit < len(data)
+            }
         )
         
     except Exception as e:
