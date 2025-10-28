@@ -14,6 +14,8 @@ import jwt
 from datetime import datetime, timedelta
 import secrets
 import string
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -47,6 +49,39 @@ def get_bigquery_client():
     except Exception as e:
         print(f"Erro ao conectar com BigQuery: {e}")
         return None
+
+# Thread pool para operações BigQuery assíncronas
+bigquery_executor = ThreadPoolExecutor(max_workers=10)
+
+async def execute_bigquery_query_async(query: str, job_config=None):
+    """Executa query BigQuery de forma assíncrona"""
+    def _run_query():
+        client = get_bigquery_client()
+        if not client:
+            raise Exception("Cliente BigQuery não disponível")
+        
+        if job_config:
+            result = client.query(query, job_config=job_config)
+        else:
+            result = client.query(query)
+        
+        return list(result.result())
+    
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(bigquery_executor, _run_query)
+
+async def execute_bigquery_query_simple_async(query: str):
+    """Executa query BigQuery simples de forma assíncrona"""
+    def _run_query():
+        client = get_bigquery_client()
+        if not client:
+            raise Exception("Cliente BigQuery não disponível")
+        
+        result = client.query(query)
+        return list(result.result())
+    
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(bigquery_executor, _run_query)
 
 # Configurações JWT
 SECRET_KEY = os.getenv("SECRET_KEY", "sua_chave_secreta_aqui")

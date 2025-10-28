@@ -783,10 +783,20 @@ async def get_experiment_data(
 
 if __name__ == "__main__":
     import uvicorn
+    import multiprocessing
+    
+    # Usar variável de ambiente ou detectar automaticamente
+    workers = int(os.getenv('WORKERS', min(multiprocessing.cpu_count(), 4)))
+    
+    print(f"🚀 Iniciando servidor com {workers} workers")
+    
     uvicorn.run(
         app, 
         host="0.0.0.0", 
         port=8000,
-        timeout_keep_alive=65,  # Manter conexão viva por 65s
-        timeout_graceful_shutdown=30  # Tempo para shutdown gracioso
+        workers=workers,  # Múltiplos workers para concorrência
+        timeout_keep_alive=65,
+        timeout_graceful_shutdown=30,
+        access_log=True,
+        log_level="info"
     )
