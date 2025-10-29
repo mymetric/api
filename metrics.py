@@ -3,6 +3,7 @@ Módulo de endpoints para métricas do dashboard
 """
 
 from fastapi import APIRouter, HTTPException, Depends, status
+import asyncio
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from google.cloud import bigquery
@@ -543,8 +544,7 @@ async def shipping_calc_analytics(
                 bigquery.ScalarQueryParameter("email", "STRING", token.email),
             ]
         )
-        user_result = client.query(user_query, job_config=job_config)
-        user_data = list(user_result.result())
+        user_data = await execute_bigquery_query_async(user_query, job_config)
         if not user_data:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado")
 
@@ -562,7 +562,8 @@ async def shipping_calc_analytics(
 
         project_name = get_project_name(effective_tablename)
 
-        data = _run_shipping_calc_query(client, project_name, effective_tablename, start_date, end_date)
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, lambda: _run_shipping_calc_query(client, project_name, effective_tablename, start_date, end_date))
         summary = _calculate_shipping_calc_summary(data)
 
         # Preparar dados para cache
@@ -637,8 +638,7 @@ async def shipping_calc_analytics_post(
                 bigquery.ScalarQueryParameter("email", "STRING", token.email),
             ]
         )
-        user_result = client.query(user_query, job_config=job_config)
-        user_data = list(user_result.result())
+        user_data = await execute_bigquery_query_async(user_query, job_config)
         if not user_data:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado")
 
@@ -655,7 +655,8 @@ async def shipping_calc_analytics_post(
 
         project_name = get_project_name(effective_tablename)
 
-        data = _run_shipping_calc_query(client, project_name, effective_tablename, request.start_date, request.end_date)
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, lambda: _run_shipping_calc_query(client, project_name, effective_tablename, request.start_date, request.end_date))
         summary = _calculate_shipping_calc_summary(data)
         
         # Preparar dados para cache
@@ -876,9 +877,8 @@ async def get_basic_data(
         
         print(f"Executando query: {query}")
         
-        # Executar query
-        result = client.query(query)
-        rows = list(result.result())
+        # Executar query (assíncrona)
+        rows = await execute_bigquery_query_async(query)
         
         # Converter para formato de resposta
         data = []
@@ -958,9 +958,9 @@ async def get_basic_data(
         FROM `{project_name}.dbt_join.{tablename}_events_long`
         WHERE {date_condition}
         """
-        sessions_result = client.query(sessions_summary_query)
-        sessions_row = list(sessions_result.result())[0]
-        total_sessoes = int(sessions_row.total_sessions) if sessions_row.total_sessions else 0
+        sessions_rows = await execute_bigquery_query_async(sessions_summary_query)
+        sessions_row = sessions_rows[0] if sessions_rows else None
+        total_sessoes = int(sessions_row.total_sessions) if sessions_row and sessions_row.total_sessions else 0
 
         # Criar resumo
         summary = {
@@ -1818,9 +1818,8 @@ async def get_detailed_data(
         
         print(f"Executando query de dados detalhados (sem paginação): order_by={order_by}")
         
-        # Executar query (busca TODOS os dados)
-        result = client.query(query)
-        rows = list(result.result())
+        # Executar query (busca TODOS os dados) de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
         
         # Calcular sumário com base nos mesmos grupos, SEM paginação
         # IMPORTANTE: Usa EXATAMENTE a mesma lógica de GROUP BY e COALESCE da query paginada
@@ -1856,16 +1855,16 @@ async def get_detailed_data(
         """
         
         print(f"🔍 Executando query de sumário...")
-        summary_result = client.query(summary_query)
-        summary_row = list(summary_result.result())[0]
+        summary_rows = await execute_bigquery_query_async(summary_query)
+        summary_row = summary_rows[0] if summary_rows else None
         
         # Extrair valores do sumário
-        total_sessions = int(summary_row.total_sessions) if summary_row.total_sessions else 0
-        total_add_to_cart = int(summary_row.total_add_to_cart) if summary_row.total_add_to_cart else 0
-        total_orders = int(summary_row.total_orders) if summary_row.total_orders else 0
-        total_revenue = float(summary_row.total_revenue) if summary_row.total_revenue else 0.0
-        total_paid_orders = int(summary_row.total_paid_orders) if summary_row.total_paid_orders else 0
-        total_paid_revenue = float(summary_row.total_paid_revenue) if summary_row.total_paid_revenue else 0.0
+        total_sessions = int(summary_row.total_sessions) if summary_row and summary_row.total_sessions else 0
+        total_add_to_cart = int(summary_row.total_add_to_cart) if summary_row and summary_row.total_add_to_cart else 0
+        total_orders = int(summary_row.total_orders) if summary_row and summary_row.total_orders else 0
+        total_revenue = float(summary_row.total_revenue) if summary_row and summary_row.total_revenue else 0.0
+        total_paid_orders = int(summary_row.total_paid_orders) if summary_row and summary_row.total_paid_orders else 0
+        total_paid_revenue = float(summary_row.total_paid_revenue) if summary_row and summary_row.total_paid_revenue else 0.0
         
         # Calcular métricas derivadas
         conversion_rate = (total_orders / total_sessions * 100) if total_sessions > 0 else 0

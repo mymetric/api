@@ -20,6 +20,7 @@ from zapi_service import zapi_service
 
 # Importar métodos customizados
 from custom_methods.havaianas_items_scoring import havaianas_router
+from better_stack_logger import log_to_better_stack
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -108,6 +109,19 @@ def hash_password(password: str) -> str:
 async def root():
     """Endpoint raiz"""
     return {"message": "API Dashboard de Métricas - Funcionando!"}
+
+
+@app.on_event("startup")
+async def on_startup_event():
+    # Envia um log simples de inicialização (silencioso se não configurado)
+    log_to_better_stack(
+        message="API started",
+        level="info",
+        extra={
+            "service": "metrics-api",
+            "env": os.getenv("ENV", "local"),
+        },
+    )
 
 @app.post("/login", response_model=Token)
 async def login(user_credentials: UserLogin):
