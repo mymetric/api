@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import os
 import math
 
-from utils import verify_token, TokenData, get_bigquery_client
+from utils import verify_token, TokenData, get_bigquery_client, execute_bigquery_query_async
 from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, product_trend_cache, ads_campaigns_results_cache, realtime_cache, leads_orders_cache, last_request_manager
 
 # Router para métricas
@@ -1185,7 +1185,7 @@ async def get_orders(
     request: OrdersRequest,
     token: TokenData = Depends(verify_token)
 ):
-    """Endpoint para buscar orders detalhados com cache de 1 hora"""
+    """Endpoint para buscar orders detalhados com cache de 6 horas e operações assíncronas"""
     
     # Parâmetros para o cache (sem paginação - armazena todos os dados)
     cache_params = {
@@ -1218,16 +1218,9 @@ async def get_orders(
             }
         )
     
-    # Se não estiver no cache, buscar do BigQuery
-    client = get_bigquery_client()
-    if not client:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Erro de conexão com o banco de dados"
-        )
-    
+    # Se não estiver no cache, buscar do BigQuery (assíncrono)
     try:
-        # Buscar informações do usuário
+        # Buscar informações do usuário (assíncrono)
         user_query = f"""
         SELECT tablename, access_control
         FROM `mymetric-hub-shopify.dbt_config.users`
@@ -1240,8 +1233,7 @@ async def get_orders(
             ]
         )
         
-        user_result = client.query(user_query, job_config=job_config)
-        user_data = list(user_result.result())
+        user_data = await execute_bigquery_query_async(user_query, job_config)
         
         if not user_data:
             raise HTTPException(
@@ -1332,12 +1324,11 @@ async def get_orders(
     """
         
         print(f"=== QUERY PRINCIPAL ===")
-        print(f"Executando query principal: {query}")
+        print(f"Executando query principal (assíncrona): {query[:100]}...")
         print(f"=== FIM QUERY PRINCIPAL ===")
         
-        # Executar query
-        result = client.query(query)
-        rows = list(result.result())
+        # Executar query de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
         
         # Debug: mostrar campos disponíveis na primeira linha
         if rows:

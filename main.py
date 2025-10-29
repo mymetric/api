@@ -790,13 +790,25 @@ if __name__ == "__main__":
     
     print(f"🚀 Iniciando servidor com {workers} workers")
     
-    uvicorn.run(
-        app, 
-        host="0.0.0.0", 
-        port=8000,
-        workers=workers,  # Múltiplos workers para concorrência
-        timeout_keep_alive=65,
-        timeout_graceful_shutdown=30,
-        access_log=True,
-        log_level="info"
-    )
+    # Quando usar workers > 1, precisa passar como string de importação
+    if workers > 1:
+        uvicorn.run(
+            "main:app",  # String de importação quando usar múltiplos workers
+            host="0.0.0.0", 
+            port=8000,
+            workers=workers,
+            timeout_keep_alive=65,
+            timeout_graceful_shutdown=30,
+            access_log=True,
+            log_level="info"
+        )
+    else:
+        uvicorn.run(
+            app,  # Objeto direto quando usar apenas 1 worker
+            host="0.0.0.0", 
+            port=8000,
+            timeout_keep_alive=65,
+            timeout_graceful_shutdown=30,
+            access_log=True,
+            log_level="info"
+        )

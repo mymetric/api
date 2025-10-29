@@ -33,52 +33,70 @@ class CreateUserRequest(BaseModel):
     admin: bool = False
     access_control: str = "read"  # read, write, full
 
-# Configuração do BigQuery
+# Configuração do BigQuery com connection pooling
+_bigquery_client = None
+
 def get_bigquery_client():
-    """Retorna cliente do BigQuery"""
-    try:
-        # Se tiver arquivo de credenciais
-        if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-            credentials = service_account.Credentials.from_service_account_file(
-                os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-            )
-            return bigquery.Client(credentials=credentials)
-        else:
-            # Usar credenciais padrão
-            return bigquery.Client()
-    except Exception as e:
-        print(f"Erro ao conectar com BigQuery: {e}")
-        return None
+    """Retorna cliente do BigQuery (singleton com pooling)"""
+    global _bigquery_client
+    
+    if _bigquery_client is None:
+        try:
+            # Se tiver arquivo de credenciais
+            if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+                credentials = service_account.Credentials.from_service_account_file(
+                    os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+                )
+                _bigquery_client = bigquery.Client(credentials=credentials)
+            else:
+                # Usar credenciais padrão
+                _bigquery_client = bigquery.Client()
+            print("✅ Cliente BigQuery criado com connection pooling")
+        except Exception as e:
+            print(f"Erro ao conectar com BigQuery: {e}")
+            return None
+    
+    return _bigquery_client
 
 # Thread pool para operações BigQuery assíncronas
-bigquery_executor = ThreadPoolExecutor(max_workers=10)
+# Aumentado para melhor concorrência
+bigquery_executor = ThreadPoolExecutor(max_workers=20)
 
 async def execute_bigquery_query_async(query: str, job_config=None):
-    """Executa query BigQuery de forma assíncrona"""
+    """Executa query BigQuery de forma assíncrona com connection pooling"""
     def _run_query():
         client = get_bigquery_client()
         if not client:
             raise Exception("Cliente BigQuery não disponível")
         
-        if job_config:
-            result = client.query(query, job_config=job_config)
-        else:
-            result = client.query(query)
-        
-        return list(result.result())
+        try:
+            if job_config:
+                result = client.query(query, job_config=job_config)
+            else:
+                result = client.query(query)
+            
+            # Usar to_dataframe() ou result() dependendo do tamanho
+            return list(result.result())
+        except Exception as e:
+            print(f"❌ Erro ao executar query BigQuery: {e}")
+            raise
     
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(bigquery_executor, _run_query)
 
 async def execute_bigquery_query_simple_async(query: str):
-    """Executa query BigQuery simples de forma assíncrona"""
+    """Executa query BigQuery simples de forma assíncrona com connection pooling"""
     def _run_query():
         client = get_bigquery_client()
         if not client:
             raise Exception("Cliente BigQuery não disponível")
         
-        result = client.query(query)
-        return list(result.result())
+        try:
+            result = client.query(query)
+            return list(result.result())
+        except Exception as e:
+            print(f"❌ Erro ao executar query BigQuery: {e}")
+            raise
     
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(bigquery_executor, _run_query)

@@ -134,7 +134,7 @@ basic_data_cache = CacheManager(ttl_hours=1)
 
 # Instâncias de cache para outros endpoints
 daily_metrics_cache = CacheManager(ttl_hours=1)
-orders_cache = CacheManager(ttl_hours=1)
+orders_cache = CacheManager(ttl_hours=6)  # Aumentado de 1h para 6h (dados históricos)
 detailed_data_cache = CacheManager(ttl_hours=4)
 product_trend_cache = CacheManager(ttl_hours=2)
 ads_campaigns_results_cache = CacheManager(ttl_hours=168)  # 7 dias
