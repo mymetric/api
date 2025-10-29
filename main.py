@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -21,6 +21,8 @@ from zapi_service import zapi_service
 # Importar métodos customizados
 from custom_methods.havaianas_items_scoring import havaianas_router
 from better_stack_logger import log_to_better_stack
+import time
+import json
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -122,6 +124,84 @@ async def on_startup_event():
             "env": os.getenv("ENV", "local"),
         },
     )
+
+
+@app.middleware("http")
+async def better_stack_logging_middleware(request, call_next):
+    start_time = time.time()
+
+    # Only log POST requests payloads
+    request_body_text = None
+    if request.method.upper() == "POST":
+        try:
+            body_bytes = await request.body()
+            # Reinject body so downstream handlers can read it again
+            async def receive():
+                return {"type": "http.request", "body": body_bytes, "more_body": False}
+            request._receive = receive
+
+            # Truncate to avoid huge logs
+            if body_bytes:
+                request_body_text = body_bytes.decode(errors="ignore")
+                if len(request_body_text) > 4000:
+                    request_body_text = request_body_text[:4000] + "...<truncated>"
+        except Exception:
+            request_body_text = None
+
+    # Process request
+    response = await call_next(request)
+
+    # Capture response body by consuming iterator and rebuilding response
+    status_code = response.status_code
+    media_type = response.media_type
+    headers = dict(response.headers)
+
+    resp_body_bytes = b""
+    try:
+        async for chunk in response.body_iterator:
+            resp_body_bytes += chunk
+    except Exception:
+        # If cannot iterate, keep original response
+        return response
+
+    # Rebuild response to return to client
+    new_response = Response(content=resp_body_bytes, status_code=status_code, headers=headers, media_type=media_type)
+
+    # Prepare log payload (truncate response)
+    response_text = None
+    try:
+        if resp_body_bytes:
+            response_text = resp_body_bytes.decode(errors="ignore")
+            if len(response_text) > 4000:
+                response_text = response_text[:4000] + "...<truncated>"
+    except Exception:
+        response_text = None
+
+    duration_ms = int((time.time() - start_time) * 1000)
+
+    # Sanitize headers
+    req_headers = {k: v for k, v in request.headers.items() if k.lower() not in ("authorization", "cookie")}
+
+    # Log to Better Stack (non-blocking best-effort)
+    try:
+        log_to_better_stack(
+            message="HTTP POST request" if request.method.upper() == "POST" else "HTTP request",
+            level="info",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "query": dict(request.query_params),
+                "status": status_code,
+                "duration_ms": duration_ms,
+                "request_headers": req_headers,
+                "request_body": request_body_text if request.method.upper() == "POST" else None,
+                "response_body": response_text,
+            },
+        )
+    except Exception:
+        pass
+
+    return new_response
 
 @app.post("/login", response_model=Token)
 async def login(user_credentials: UserLogin):
