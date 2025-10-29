@@ -11,7 +11,7 @@ import os
 import math
 
 from utils import verify_token, TokenData, get_bigquery_client, execute_bigquery_query_async
-from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, product_trend_cache, ads_campaigns_results_cache, realtime_cache, leads_orders_cache, last_request_manager
+from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, product_trend_cache, ads_campaigns_results_cache, realtime_cache, leads_orders_cache, shipping_calc_cache, last_request_manager
 
 # Router para métricas
 metrics_router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -505,7 +505,25 @@ async def shipping_calc_analytics(
     """
     Retorna métricas de cálculo de frete a partir da tabela
     `bq-mktbr.dbt_aggregated.havaianas_shipping_calc_analytics`.
+    Cache de 24 horas.
     """
+    # Parâmetros para o cache
+    cache_params = {
+        'email': token.email,
+        'start_date': start_date,
+        'end_date': end_date,
+        'table_name': table_name
+    }
+    
+    # Tentar buscar do cache primeiro
+    cached_data = shipping_calc_cache.get(**cache_params)
+    if cached_data:
+        return ShippingCalcAnalyticsResponse(
+            summary=cached_data['summary'],
+            data=cached_data['data'],
+            total_rows=cached_data['total_rows']
+        )
+    
     try:
         client = get_bigquery_client()
         if not client:
@@ -547,6 +565,17 @@ async def shipping_calc_analytics(
         data = _run_shipping_calc_query(client, project_name, effective_tablename, start_date, end_date)
         summary = _calculate_shipping_calc_summary(data)
 
+        # Preparar dados para cache
+        response_data = {
+            'summary': summary,
+            'data': [row.dict() for row in data],
+            'total_rows': len(data),
+            'cached_at': datetime.now().isoformat()
+        }
+        
+        # Armazenar no cache
+        shipping_calc_cache.set(response_data, **cache_params)
+
         return ShippingCalcAnalyticsResponse(
             summary=summary,
             data=data,
@@ -570,7 +599,25 @@ async def shipping_calc_analytics_post(
 ):
     """
     Versão POST do endpoint para compatibilidade de chamadas via POST.
+    Cache de 24 horas.
     """
+    # Parâmetros para o cache
+    cache_params = {
+        'email': token.email,
+        'start_date': request.start_date,
+        'end_date': request.end_date,
+        'table_name': request.table_name
+    }
+    
+    # Tentar buscar do cache primeiro
+    cached_data = shipping_calc_cache.get(**cache_params)
+    if cached_data:
+        return ShippingCalcAnalyticsResponse(
+            summary=cached_data['summary'],
+            data=cached_data['data'],
+            total_rows=cached_data['total_rows']
+        )
+    
     try:
         client = get_bigquery_client()
         if not client:
@@ -610,6 +657,18 @@ async def shipping_calc_analytics_post(
 
         data = _run_shipping_calc_query(client, project_name, effective_tablename, request.start_date, request.end_date)
         summary = _calculate_shipping_calc_summary(data)
+        
+        # Preparar dados para cache
+        response_data = {
+            'summary': summary,
+            'data': [row.dict() for row in data],
+            'total_rows': len(data),
+            'cached_at': datetime.now().isoformat()
+        }
+        
+        # Armazenar no cache
+        shipping_calc_cache.set(response_data, **cache_params)
+        
         return ShippingCalcAnalyticsResponse(
             summary=summary,
             data=data,

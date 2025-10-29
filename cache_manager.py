@@ -140,6 +140,7 @@ product_trend_cache = CacheManager(ttl_hours=2)
 ads_campaigns_results_cache = CacheManager(ttl_hours=168)  # 7 dias
 realtime_cache = CacheManager(ttl_hours=0.25)  # 15 minutos para dados realtime
 leads_orders_cache = CacheManager(ttl_hours=168)  # 7 dias para leads_orders
+shipping_calc_cache = CacheManager(ttl_hours=24)  # 24 horas para shipping-calc-analytics
 
 # Sistema para salvar último request
 import os
