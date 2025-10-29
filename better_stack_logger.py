@@ -22,8 +22,28 @@ def log_to_better_stack(
       - BETTER_STACK_URL  (e.g. https://sXXXX.eu-YYY.betterstackdata.com)
     """
 
-    bs_token = token or os.getenv("BETTER_STACK_TOKEN")
-    bs_url = url or os.getenv("BETTER_STACK_URL")
+    import json
+
+    def _load_telemetry_json():
+        try:
+            with open("credentials/telemetry.json", "r") as f:
+                data = json.load(f)
+            return data
+        except Exception:
+            return {}
+
+    _telemetry_data = _load_telemetry_json()
+
+    bs_token = (
+        token
+        or os.getenv("BETTER_STACK_TOKEN")
+        or _telemetry_data.get("token")
+    )
+    bs_url = (
+        url
+        or os.getenv("BETTER_STACK_URL")
+        or _telemetry_data.get("url")
+    )
 
     if not bs_token or not bs_url:
         # Silently skip if not configured
