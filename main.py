@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, status, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import os
@@ -31,6 +32,12 @@ app = FastAPI(
     title="API Dashboard de Métricas",
     description="API para autenticação e dados de métricas",
     version="1.0.0"
+)
+
+# Configurar compressão GZip (melhora performance para respostas grandes)
+app.add_middleware(
+    GZipMiddleware,
+    minimum_size=1000,  # Comprimir apenas respostas maiores que 1KB
 )
 
 # Configurar CORS
@@ -130,7 +137,7 @@ async def on_startup_event():
 async def better_stack_logging_middleware(request, call_next):
     start_time = time.time()
 
-    # Only log POST requests payloads
+    # Skip body processing for GET/HEAD requests to improve performance
     request_body_text = None
     if request.method.upper() == "POST":
         try:
@@ -143,63 +150,67 @@ async def better_stack_logging_middleware(request, call_next):
             # Truncate to avoid huge logs
             if body_bytes:
                 request_body_text = body_bytes.decode(errors="ignore")
-                if len(request_body_text) > 4000:
-                    request_body_text = request_body_text[:4000] + "...<truncated>"
+                if len(request_body_text) > 2000:  # Reduced from 4000 to improve performance
+                    request_body_text = request_body_text[:2000] + "...<truncated>"
         except Exception:
             request_body_text = None
 
     # Process request
     response = await call_next(request)
 
-    # Capture response body by consuming iterator and rebuilding response
+    # Only capture response body for POST requests or errors
     status_code = response.status_code
     media_type = response.media_type
     headers = dict(response.headers)
 
+    # Skip response body processing for GET requests to improve performance
     resp_body_bytes = b""
-    try:
-        async for chunk in response.body_iterator:
-            resp_body_bytes += chunk
-    except Exception:
-        # If cannot iterate, keep original response
-        return response
-
-    # Rebuild response to return to client
-    new_response = Response(content=resp_body_bytes, status_code=status_code, headers=headers, media_type=media_type)
-
-    # Prepare log payload (truncate response)
     response_text = None
-    try:
-        if resp_body_bytes:
-            response_text = resp_body_bytes.decode(errors="ignore")
-            if len(response_text) > 4000:
-                response_text = response_text[:4000] + "...<truncated>"
-    except Exception:
-        response_text = None
+    
+    if request.method.upper() == "POST" or status_code >= 400:
+        try:
+            async for chunk in response.body_iterator:
+                resp_body_bytes += chunk
+            
+            # Only decode if it's a POST or error response
+            if resp_body_bytes:
+                response_text = resp_body_bytes.decode(errors="ignore")
+                if len(response_text) > 2000:  # Reduced from 4000
+                    response_text = response_text[:2000] + "...<truncated>"
+        except Exception:
+            # If cannot iterate, keep original response
+            return response
+        
+        # Rebuild response to return to client
+        new_response = Response(content=resp_body_bytes, status_code=status_code, headers=headers, media_type=media_type)
+    else:
+        # For GET requests, return original response without body processing
+        new_response = response
 
     duration_ms = int((time.time() - start_time) * 1000)
 
-    # Sanitize headers
+    # Sanitize headers (only for POST or errors)
     req_headers = {k: v for k, v in request.headers.items() if k.lower() not in ("authorization", "cookie")}
 
-    # Log to Better Stack (non-blocking best-effort)
-    try:
-        log_to_better_stack(
-            message="HTTP POST request" if request.method.upper() == "POST" else "HTTP request",
-            level="info",
-            extra={
-                "method": request.method,
-                "path": request.url.path,
-                "query": dict(request.query_params),
-                "status": status_code,
-                "duration_ms": duration_ms,
-                "request_headers": req_headers,
-                "request_body": request_body_text if request.method.upper() == "POST" else None,
-                "response_body": response_text,
-            },
-        )
-    except Exception:
-        pass
+    # Log to Better Stack (non-blocking best-effort) - only for POST or errors
+    if request.method.upper() == "POST" or status_code >= 400:
+        try:
+            log_to_better_stack(
+                message="HTTP POST request" if request.method.upper() == "POST" else "HTTP error",
+                level="info",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "query": dict(request.query_params),
+                    "status": status_code,
+                    "duration_ms": duration_ms,
+                    "request_headers": req_headers,
+                    "request_body": request_body_text if request.method.upper() == "POST" else None,
+                    "response_body": response_text,
+                },
+            )
+        except Exception:
+            pass
 
     return new_response
 

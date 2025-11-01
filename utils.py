@@ -5,7 +5,7 @@ Utilitários compartilhados entre os módulos
 from fastapi import HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict
 import os
 from dotenv import load_dotenv
 from google.cloud import bigquery
@@ -59,8 +59,12 @@ def get_bigquery_client():
     return _bigquery_client
 
 # Thread pool para operações BigQuery assíncronas
-# Aumentado para melhor concorrência
-bigquery_executor = ThreadPoolExecutor(max_workers=20)
+# Otimizado para melhor concorrência e performance
+# Usar min(cores * 2, 30) para balancear concorrência sem sobrecarregar
+import multiprocessing
+optimal_workers = min(multiprocessing.cpu_count() * 2, 30)
+bigquery_executor = ThreadPoolExecutor(max_workers=optimal_workers)
+print(f"✅ ThreadPoolExecutor configurado com {optimal_workers} workers")
 
 async def execute_bigquery_query_async(query: str, job_config=None):
     """Executa query BigQuery de forma assíncrona com connection pooling"""
@@ -194,8 +198,24 @@ def generate_secure_password(length: int = 12) -> str:
     
     return ''.join(password_list)
 
+# Cache para verificação de admin (evita queries repetidas)
+_admin_cache: Dict[str, tuple] = {}  # {email: (is_admin, timestamp)}
+_admin_cache_ttl = 300  # 5 minutos
+
 def verify_admin_user(email: str) -> bool:
-    """Verifica se o usuário é admin"""
+    """Verifica se o usuário é admin (com cache)"""
+    import time
+    
+    # Verificar cache primeiro
+    if email in _admin_cache:
+        is_admin, timestamp = _admin_cache[email]
+        if time.time() - timestamp < _admin_cache_ttl:
+            return is_admin
+        else:
+            # Cache expirado, remover
+            del _admin_cache[email]
+    
+    # Cache miss ou expirado, buscar no banco
     try:
         client = get_bigquery_client()
         if not client:
@@ -217,9 +237,14 @@ def verify_admin_user(email: str) -> bool:
         results = list(query_job.result())
         
         if not results:
+            # Cache resultado negativo também
+            _admin_cache[email] = (False, time.time())
             return False
         
-        return results[0].admin
+        is_admin = results[0].admin
+        # Cache resultado
+        _admin_cache[email] = (is_admin, time.time())
+        return is_admin
     except Exception as e:
         print(f"Erro ao verificar se usuário é admin: {e}")
         return False 

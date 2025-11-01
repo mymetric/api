@@ -1138,9 +1138,8 @@ async def get_daily_metrics(
         
         print(f"Executando query daily-metrics: {query}")
         
-        # Executar query
-        result = client.query(query)
-        rows = list(result.result())
+        # Executar query de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
         
         # Converter para formato de resposta
         data = []
@@ -2151,9 +2150,8 @@ async def get_product_trend(
         
         print(f"Executando query product-trend: {query}")
         
-        # Executar query
-        result = client.query(query)
-        rows = list(result.result())
+        # Executar query de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
         
         # Converter para formato de resposta
         data = []
@@ -2430,9 +2428,8 @@ async def get_ads_campaigns_results(
         
         print(f"Executando query ads-campaigns-results: {query}")
         
-        # Executar query
-        result = client.query(query)
-        rows = list(result.result())
+        # Executar query de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
         
         # Converter para formato de resposta
         data = []
@@ -2758,9 +2755,8 @@ async def get_ads_creatives_results(
         
         print(f"Executando query ads-creatives-results: {query}")
         
-        # Executar query
-        result = client.query(query)
-        rows = list(result.result())
+        # Executar query de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
         
         # Converter para formato de resposta
         data = []
@@ -2982,9 +2978,8 @@ async def get_realtime_purchases(
         
         print(f"Executando query realtime: {query}")
         
-        # Executar query
-        result = client.query(query)
-        rows = list(result.result())
+        # Executar query de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
         
         # Converter para formato de resposta
         data = []
