@@ -354,6 +354,14 @@ class RealtimeResponse(BaseModel):
     summary: Dict[str, Any]
     cache_info: Optional[Dict[str, Any]] = None
 
+# Novos modelos para receita realtime
+class RealtimeRevenueRequest(BaseModel):
+    table_name: str
+
+class RealtimeRevenueResponse(BaseModel):
+    total_revenue: float
+    table_name: str
+    cache_info: Optional[Dict[str, Any]] = None
 
 
 # -------------------------------
@@ -3073,6 +3081,108 @@ async def get_realtime_purchases(
         
     except Exception as e:
         print(f"Erro ao buscar dados realtime: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+
+@metrics_router.post("/realtime-revenue", response_model=RealtimeRevenueResponse)
+async def get_realtime_revenue(
+    request: RealtimeRevenueRequest,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para buscar receita realtime do dia atual"""
+    
+    # Se não estiver no cache, buscar do BigQuery
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        # Validar se table_name foi fornecido
+        if not request.table_name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="O campo 'table_name' é obrigatório"
+            )
+        
+        # Buscar informações do usuário
+        user_query = f"""
+        SELECT tablename, access_control
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        
+        user_result = client.query(user_query, job_config=job_config)
+        user_data = list(user_result.result())
+        
+        if not user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário não encontrado"
+            )
+        
+        user_tablename = user_data[0].tablename
+        access_control = user_data[0].access_control
+        
+        # Determinar qual tabela usar
+        if user_tablename == 'all':
+            # Usuário tem acesso a todas as tabelas
+            tablename = request.table_name
+            print(f"🔓 Usuário com acesso total escolheu tabela: {tablename}")
+        else:
+            # Usuário tem acesso limitado a uma tabela específica
+            if request.table_name and request.table_name != user_tablename:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
+                )
+            tablename = user_tablename
+            print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
+        
+        # Determinar projeto
+        project_name = get_project_name(tablename)
+        
+        # Construir query para receita realtime do dia atual
+        query = f"""
+        SELECT
+            sum(value) as total_revenue
+        FROM `{project_name}.dbt_granular.{tablename}_orders_dedup`
+        WHERE date(created_at) = current_date("America/Sao_Paulo")
+        """
+        
+        print(f"Executando query realtime revenue: {query}")
+        
+        # Executar query de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
+        
+        # Extrair valor
+        total_revenue = 0.0
+        if rows and len(rows) > 0:
+            total_revenue = float(rows[0].total_revenue) if rows[0].total_revenue else 0.0
+        
+        return RealtimeRevenueResponse(
+            total_revenue=total_revenue,
+            table_name=tablename,
+            cache_info={
+                'source': 'database',
+                'cached_at': datetime.now().isoformat(),
+                'ttl_hours': 0.25
+            }
+        )
+        
+    except Exception as e:
+        print(f"Erro ao buscar receita realtime: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro interno do servidor: {str(e)}"
