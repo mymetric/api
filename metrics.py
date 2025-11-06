@@ -3,6 +3,7 @@ Módulo de endpoints para métricas do dashboard
 """
 
 from fastapi import APIRouter, HTTPException, Depends, status
+import asyncio
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from google.cloud import bigquery
@@ -10,8 +11,8 @@ from datetime import datetime, timedelta
 import os
 import math
 
-from utils import verify_token, TokenData, get_bigquery_client
-from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, product_trend_cache, ads_campaigns_results_cache, realtime_cache, leads_orders_cache, last_request_manager
+from utils import verify_token, TokenData, get_bigquery_client, execute_bigquery_query_async
+from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, product_trend_cache, ads_campaigns_results_cache, realtime_cache, leads_orders_cache, shipping_calc_cache, last_request_manager
 
 # Router para métricas
 metrics_router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -150,6 +151,7 @@ class OrdersResponse(BaseModel):
     data: List[OrderRow]
     total_rows: int
     summary: Dict[str, Any]
+    pagination: Optional[Dict[str, Any]] = None
 
 # Modelos para metas do usuário
 class UserGoalsRequest(BaseModel):
@@ -352,6 +354,14 @@ class RealtimeResponse(BaseModel):
     summary: Dict[str, Any]
     cache_info: Optional[Dict[str, Any]] = None
 
+# Novos modelos para receita realtime
+class RealtimeRevenueRequest(BaseModel):
+    table_name: str
+
+class RealtimeRevenueResponse(BaseModel):
+    total_revenue: float
+    table_name: str
+    cache_info: Optional[Dict[str, Any]] = None
 
 
 # -------------------------------
@@ -504,7 +514,25 @@ async def shipping_calc_analytics(
     """
     Retorna métricas de cálculo de frete a partir da tabela
     `bq-mktbr.dbt_aggregated.havaianas_shipping_calc_analytics`.
+    Cache de 24 horas.
     """
+    # Parâmetros para o cache
+    cache_params = {
+        'email': token.email,
+        'start_date': start_date,
+        'end_date': end_date,
+        'table_name': table_name
+    }
+    
+    # Tentar buscar do cache primeiro
+    cached_data = shipping_calc_cache.get(**cache_params)
+    if cached_data:
+        return ShippingCalcAnalyticsResponse(
+            summary=cached_data['summary'],
+            data=cached_data['data'],
+            total_rows=cached_data['total_rows']
+        )
+    
     try:
         client = get_bigquery_client()
         if not client:
@@ -524,8 +552,7 @@ async def shipping_calc_analytics(
                 bigquery.ScalarQueryParameter("email", "STRING", token.email),
             ]
         )
-        user_result = client.query(user_query, job_config=job_config)
-        user_data = list(user_result.result())
+        user_data = await execute_bigquery_query_async(user_query, job_config)
         if not user_data:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado")
 
@@ -543,8 +570,20 @@ async def shipping_calc_analytics(
 
         project_name = get_project_name(effective_tablename)
 
-        data = _run_shipping_calc_query(client, project_name, effective_tablename, start_date, end_date)
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, lambda: _run_shipping_calc_query(client, project_name, effective_tablename, start_date, end_date))
         summary = _calculate_shipping_calc_summary(data)
+
+        # Preparar dados para cache
+        response_data = {
+            'summary': summary,
+            'data': [row.dict() for row in data],
+            'total_rows': len(data),
+            'cached_at': datetime.now().isoformat()
+        }
+        
+        # Armazenar no cache
+        shipping_calc_cache.set(response_data, **cache_params)
 
         return ShippingCalcAnalyticsResponse(
             summary=summary,
@@ -569,7 +608,25 @@ async def shipping_calc_analytics_post(
 ):
     """
     Versão POST do endpoint para compatibilidade de chamadas via POST.
+    Cache de 24 horas.
     """
+    # Parâmetros para o cache
+    cache_params = {
+        'email': token.email,
+        'start_date': request.start_date,
+        'end_date': request.end_date,
+        'table_name': request.table_name
+    }
+    
+    # Tentar buscar do cache primeiro
+    cached_data = shipping_calc_cache.get(**cache_params)
+    if cached_data:
+        return ShippingCalcAnalyticsResponse(
+            summary=cached_data['summary'],
+            data=cached_data['data'],
+            total_rows=cached_data['total_rows']
+        )
+    
     try:
         client = get_bigquery_client()
         if not client:
@@ -589,8 +646,7 @@ async def shipping_calc_analytics_post(
                 bigquery.ScalarQueryParameter("email", "STRING", token.email),
             ]
         )
-        user_result = client.query(user_query, job_config=job_config)
-        user_data = list(user_result.result())
+        user_data = await execute_bigquery_query_async(user_query, job_config)
         if not user_data:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado")
 
@@ -607,8 +663,21 @@ async def shipping_calc_analytics_post(
 
         project_name = get_project_name(effective_tablename)
 
-        data = _run_shipping_calc_query(client, project_name, effective_tablename, request.start_date, request.end_date)
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, lambda: _run_shipping_calc_query(client, project_name, effective_tablename, request.start_date, request.end_date))
         summary = _calculate_shipping_calc_summary(data)
+        
+        # Preparar dados para cache
+        response_data = {
+            'summary': summary,
+            'data': [row.dict() for row in data],
+            'total_rows': len(data),
+            'cached_at': datetime.now().isoformat()
+        }
+        
+        # Armazenar no cache
+        shipping_calc_cache.set(response_data, **cache_params)
+        
         return ShippingCalcAnalyticsResponse(
             summary=summary,
             data=data,
@@ -816,9 +885,8 @@ async def get_basic_data(
         
         print(f"Executando query: {query}")
         
-        # Executar query
-        result = client.query(query)
-        rows = list(result.result())
+        # Executar query (assíncrona)
+        rows = await execute_bigquery_query_async(query)
         
         # Converter para formato de resposta
         data = []
@@ -892,6 +960,16 @@ async def get_basic_data(
                                    total_pedidos_assinatura_anual_recorrente + 
                                    total_pedidos_assinatura_mensal_recorrente)
         
+        # Recalcular total de sessões com uma query agregada direta, garantindo consistência com detailed-data
+        sessions_summary_query = f"""
+        SELECT COUNTIF(event_name = 'session') AS total_sessions
+        FROM `{project_name}.dbt_join.{tablename}_events_long`
+        WHERE {date_condition}
+        """
+        sessions_rows = await execute_bigquery_query_async(sessions_summary_query)
+        sessions_row = sessions_rows[0] if sessions_rows else None
+        total_sessoes = int(sessions_row.total_sessions) if sessions_row and sessions_row.total_sessions else 0
+
         # Criar resumo
         summary = {
             "total_investimento": total_investimento,
@@ -1068,9 +1146,8 @@ async def get_daily_metrics(
         
         print(f"Executando query daily-metrics: {query}")
         
-        # Executar query
-        result = client.query(query)
-        rows = list(result.result())
+        # Executar query de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
         
         # Converter para formato de resposta
         data = []
@@ -1174,16 +1251,14 @@ async def get_orders(
     request: OrdersRequest,
     token: TokenData = Depends(verify_token)
 ):
-    """Endpoint para buscar orders detalhados com cache de 1 hora"""
+    """Endpoint para buscar orders detalhados com cache de 6 horas e operações assíncronas"""
     
-    # Parâmetros para o cache
+    # Parâmetros para o cache (sem paginação - armazena todos os dados)
     cache_params = {
         'email': token.email,
         'start_date': request.start_date,
         'end_date': request.end_date,
         'table_name': request.table_name,
-        'limit': request.limit,
-        'offset': request.offset,
         'traffic_category': request.traffic_category,
         'fs_traffic_category': request.fs_traffic_category,
         'fsm_traffic_category': request.fsm_traffic_category
@@ -1192,22 +1267,26 @@ async def get_orders(
     # Tentar buscar do cache primeiro
     cached_data = orders_cache.get(**cache_params)
     if cached_data:
+        # Aplicar paginação aos dados do cache
+        all_cached_data = cached_data['all_data']
+        start_idx = request.offset
+        end_idx = start_idx + request.limit
+        paginated_data = all_cached_data[start_idx:end_idx]
+        
         return OrdersResponse(
-            data=cached_data['data'],
+            data=paginated_data,
             total_rows=cached_data['total_rows'],
-            summary=cached_data['summary']
+            summary=cached_data['summary'],
+            pagination={
+                'limit': request.limit,
+                'offset': request.offset,
+                'has_more': request.offset + request.limit < cached_data['total_rows']
+            }
         )
     
-    # Se não estiver no cache, buscar do BigQuery
-    client = get_bigquery_client()
-    if not client:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Erro de conexão com o banco de dados"
-        )
-    
+    # Se não estiver no cache, buscar do BigQuery (assíncrono)
     try:
-        # Buscar informações do usuário
+        # Buscar informações do usuário (assíncrono)
         user_query = f"""
         SELECT tablename, access_control
         FROM `mymetric-hub-shopify.dbt_config.users`
@@ -1220,8 +1299,7 @@ async def get_orders(
             ]
         )
         
-        user_result = client.query(user_query, job_config=job_config)
-        user_data = list(user_result.result())
+        user_data = await execute_bigquery_query_async(user_query, job_config)
         
         if not user_data:
             raise HTTPException(
@@ -1256,28 +1334,7 @@ async def get_orders(
         # Determinar projeto
         project_name = get_project_name(tablename)
         
-        # Query de teste para verificar estrutura da tabela
-        test_query = f"""
-        SELECT *
-        FROM `{project_name}.dbt_join.{tablename}_orders_sessions`
-        WHERE date(created_at) BETWEEN '{request.start_date}' AND '{request.end_date}'
-        LIMIT 1
-        """
-        
-        print(f"=== TESTE: Verificando estrutura da tabela ===")
-        print(f"Executando query de teste: {test_query}")
-        
-        test_result = client.query(test_query)
-        test_rows = list(test_result.result())
-        
-        if test_rows:
-            test_row = test_rows[0]
-            print(f"Campos disponíveis na tabela: {list(test_row.keys())}")
-            print(f"Primeira linha completa: {dict(test_row)}")
-        else:
-            print("Nenhum resultado encontrado na tabela")
-        
-        print(f"=== FIM DO TESTE ===")
+        # (removido) Query de teste e logs de depuração
         
         # Construir condições de filtro para traffic_category
         filter_conditions = [f"date(created_at) BETWEEN '{request.start_date}' AND '{request.end_date}'"]
@@ -1330,17 +1387,14 @@ async def get_orders(
         FROM `{project_name}.dbt_join.{tablename}_orders_sessions`
         WHERE {where_clause}
         ORDER BY created_at DESC
-        LIMIT {request.limit}
-        OFFSET {request.offset}
     """
         
         print(f"=== QUERY PRINCIPAL ===")
-        print(f"Executando query principal: {query}")
+        print(f"Executando query principal (assíncrona): {query[:100]}...")
         print(f"=== FIM QUERY PRINCIPAL ===")
         
-        # Executar query
-        result = client.query(query)
-        rows = list(result.result())
+        # Executar query de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
         
         # Debug: mostrar campos disponíveis na primeira linha
         if rows:
@@ -1432,10 +1486,10 @@ async def get_orders(
             }
         }
         
-        # Preparar resposta
+        # Preparar dados para cache (armazenar TODOS os dados)
         response_data = {
-            'data': [row.dict() for row in data],
-            'total_rows': len(data),
+            'all_data': [row.dict() for row in data],  # Todos os dados
+            'total_rows': len(data),  # Total de registros
             'summary': summary,
             'cached_at': datetime.now().isoformat()
         }
@@ -1459,10 +1513,20 @@ async def get_orders(
         # Armazenar no cache
         orders_cache.set(response_data, **cache_params)
         
+        # Aplicar paginação aos dados antes de retornar
+        start_idx = request.offset
+        end_idx = start_idx + request.limit
+        paginated_data = data[start_idx:end_idx]
+        
         return OrdersResponse(
-            data=data,
-            total_rows=len(data),
-            summary=summary
+            data=paginated_data,
+            total_rows=len(data),  # Total de todos os dados
+            summary=summary,
+            pagination={
+                'limit': request.limit,
+                'offset': request.offset,
+                'has_more': request.offset + request.limit < len(data)
+            }
         )
         
     except Exception as e:
@@ -1761,9 +1825,8 @@ async def get_detailed_data(
         
         print(f"Executando query de dados detalhados (sem paginação): order_by={order_by}")
         
-        # Executar query (busca TODOS os dados)
-        result = client.query(query)
-        rows = list(result.result())
+        # Executar query (busca TODOS os dados) de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
         
         # Calcular sumário com base nos mesmos grupos, SEM paginação
         # IMPORTANTE: Usa EXATAMENTE a mesma lógica de GROUP BY e COALESCE da query paginada
@@ -1799,16 +1862,16 @@ async def get_detailed_data(
         """
         
         print(f"🔍 Executando query de sumário...")
-        summary_result = client.query(summary_query)
-        summary_row = list(summary_result.result())[0]
+        summary_rows = await execute_bigquery_query_async(summary_query)
+        summary_row = summary_rows[0] if summary_rows else None
         
         # Extrair valores do sumário
-        total_sessions = int(summary_row.total_sessions) if summary_row.total_sessions else 0
-        total_add_to_cart = int(summary_row.total_add_to_cart) if summary_row.total_add_to_cart else 0
-        total_orders = int(summary_row.total_orders) if summary_row.total_orders else 0
-        total_revenue = float(summary_row.total_revenue) if summary_row.total_revenue else 0.0
-        total_paid_orders = int(summary_row.total_paid_orders) if summary_row.total_paid_orders else 0
-        total_paid_revenue = float(summary_row.total_paid_revenue) if summary_row.total_paid_revenue else 0.0
+        total_sessions = int(summary_row.total_sessions) if summary_row and summary_row.total_sessions else 0
+        total_add_to_cart = int(summary_row.total_add_to_cart) if summary_row and summary_row.total_add_to_cart else 0
+        total_orders = int(summary_row.total_orders) if summary_row and summary_row.total_orders else 0
+        total_revenue = float(summary_row.total_revenue) if summary_row and summary_row.total_revenue else 0.0
+        total_paid_orders = int(summary_row.total_paid_orders) if summary_row and summary_row.total_paid_orders else 0
+        total_paid_revenue = float(summary_row.total_paid_revenue) if summary_row and summary_row.total_paid_revenue else 0.0
         
         # Calcular métricas derivadas
         conversion_rate = (total_orders / total_sessions * 100) if total_sessions > 0 else 0
@@ -2095,9 +2158,8 @@ async def get_product_trend(
         
         print(f"Executando query product-trend: {query}")
         
-        # Executar query
-        result = client.query(query)
-        rows = list(result.result())
+        # Executar query de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
         
         # Converter para formato de resposta
         data = []
@@ -2374,9 +2436,8 @@ async def get_ads_campaigns_results(
         
         print(f"Executando query ads-campaigns-results: {query}")
         
-        # Executar query
-        result = client.query(query)
-        rows = list(result.result())
+        # Executar query de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
         
         # Converter para formato de resposta
         data = []
@@ -2702,9 +2763,8 @@ async def get_ads_creatives_results(
         
         print(f"Executando query ads-creatives-results: {query}")
         
-        # Executar query
-        result = client.query(query)
-        rows = list(result.result())
+        # Executar query de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
         
         # Converter para formato de resposta
         data = []
@@ -2926,9 +2986,8 @@ async def get_realtime_purchases(
         
         print(f"Executando query realtime: {query}")
         
-        # Executar query
-        result = client.query(query)
-        rows = list(result.result())
+        # Executar query de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
         
         # Converter para formato de resposta
         data = []
@@ -3022,6 +3081,108 @@ async def get_realtime_purchases(
         
     except Exception as e:
         print(f"Erro ao buscar dados realtime: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
+
+@metrics_router.post("/realtime-revenue", response_model=RealtimeRevenueResponse)
+async def get_realtime_revenue(
+    request: RealtimeRevenueRequest,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para buscar receita realtime do dia atual"""
+    
+    # Se não estiver no cache, buscar do BigQuery
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        # Validar se table_name foi fornecido
+        if not request.table_name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="O campo 'table_name' é obrigatório"
+            )
+        
+        # Buscar informações do usuário
+        user_query = f"""
+        SELECT tablename, access_control
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        
+        user_result = client.query(user_query, job_config=job_config)
+        user_data = list(user_result.result())
+        
+        if not user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário não encontrado"
+            )
+        
+        user_tablename = user_data[0].tablename
+        access_control = user_data[0].access_control
+        
+        # Determinar qual tabela usar
+        if user_tablename == 'all':
+            # Usuário tem acesso a todas as tabelas
+            tablename = request.table_name
+            print(f"🔓 Usuário com acesso total escolheu tabela: {tablename}")
+        else:
+            # Usuário tem acesso limitado a uma tabela específica
+            if request.table_name and request.table_name != user_tablename:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
+                )
+            tablename = user_tablename
+            print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
+        
+        # Determinar projeto
+        project_name = get_project_name(tablename)
+        
+        # Construir query para receita realtime do dia atual
+        query = f"""
+        SELECT
+            sum(value) as total_revenue
+        FROM `{project_name}.dbt_granular.{tablename}_orders_dedup`
+        WHERE date(created_at) = current_date("America/Sao_Paulo")
+        """
+        
+        print(f"Executando query realtime revenue: {query}")
+        
+        # Executar query de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
+        
+        # Extrair valor
+        total_revenue = 0.0
+        if rows and len(rows) > 0:
+            total_revenue = float(rows[0].total_revenue) if rows[0].total_revenue else 0.0
+        
+        return RealtimeRevenueResponse(
+            total_revenue=total_revenue,
+            table_name=tablename,
+            cache_info={
+                'source': 'database',
+                'cached_at': datetime.now().isoformat(),
+                'ttl_hours': 0.25
+            }
+        )
+        
+    except Exception as e:
+        print(f"Erro ao buscar receita realtime: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro interno do servidor: {str(e)}"
@@ -3457,8 +3618,13 @@ async def get_leads_orders(
         
         last_request = last_request_manager.get_last_request('leads_orders', request.table_name)
         if last_request:
-            # Executar o último request salvo (se o usuário tem acesso à tabela, pode ver requests de qualquer usuário)
-            return await execute_last_request('leads_orders', last_request['request_data'], token)
+            # Usar os parâmetros do último request, mas permitir override de limit/offset
+            last_request_data = last_request['request_data'].copy()
+            last_request_data['limit'] = request.limit
+            last_request_data['offset'] = request.offset
+            
+            # Executar o último request salvo com os novos parâmetros de paginação
+            return await execute_last_request('leads_orders', last_request_data, token)
         else:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

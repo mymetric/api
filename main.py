@@ -1,6 +1,7 @@
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import os
@@ -20,6 +21,9 @@ from zapi_service import zapi_service
 
 # Importar métodos customizados
 from custom_methods.havaianas_items_scoring import havaianas_router
+from better_stack_logger import log_to_better_stack
+import time
+import json
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -28,6 +32,12 @@ app = FastAPI(
     title="API Dashboard de Métricas",
     description="API para autenticação e dados de métricas",
     version="1.0.0"
+)
+
+# Configurar compressão GZip (melhora performance para respostas grandes)
+app.add_middleware(
+    GZipMiddleware,
+    minimum_size=1000,  # Comprimir apenas respostas maiores que 1KB
 )
 
 # Configurar CORS
@@ -108,6 +118,101 @@ def hash_password(password: str) -> str:
 async def root():
     """Endpoint raiz"""
     return {"message": "API Dashboard de Métricas - Funcionando!"}
+
+
+@app.on_event("startup")
+async def on_startup_event():
+    # Envia um log simples de inicialização (silencioso se não configurado)
+    log_to_better_stack(
+        message="API started",
+        level="info",
+        extra={
+            "service": "metrics-api",
+            "env": os.getenv("ENV", "local"),
+        },
+    )
+
+
+@app.middleware("http")
+async def better_stack_logging_middleware(request, call_next):
+    start_time = time.time()
+
+    # Skip body processing for GET/HEAD requests to improve performance
+    request_body_text = None
+    if request.method.upper() == "POST":
+        try:
+            body_bytes = await request.body()
+            # Reinject body so downstream handlers can read it again
+            async def receive():
+                return {"type": "http.request", "body": body_bytes, "more_body": False}
+            request._receive = receive
+
+            # Truncate to avoid huge logs
+            if body_bytes:
+                request_body_text = body_bytes.decode(errors="ignore")
+                if len(request_body_text) > 2000:  # Reduced from 4000 to improve performance
+                    request_body_text = request_body_text[:2000] + "...<truncated>"
+        except Exception:
+            request_body_text = None
+
+    # Process request
+    response = await call_next(request)
+
+    # Only capture response body for POST requests or errors
+    status_code = response.status_code
+    media_type = response.media_type
+    headers = dict(response.headers)
+
+    # Skip response body processing for GET requests to improve performance
+    resp_body_bytes = b""
+    response_text = None
+    
+    if request.method.upper() == "POST" or status_code >= 400:
+        try:
+            async for chunk in response.body_iterator:
+                resp_body_bytes += chunk
+            
+            # Only decode if it's a POST or error response
+            if resp_body_bytes:
+                response_text = resp_body_bytes.decode(errors="ignore")
+                if len(response_text) > 2000:  # Reduced from 4000
+                    response_text = response_text[:2000] + "...<truncated>"
+        except Exception:
+            # If cannot iterate, keep original response
+            return response
+        
+        # Rebuild response to return to client
+        new_response = Response(content=resp_body_bytes, status_code=status_code, headers=headers, media_type=media_type)
+    else:
+        # For GET requests, return original response without body processing
+        new_response = response
+
+    duration_ms = int((time.time() - start_time) * 1000)
+
+    # Sanitize headers (only for POST or errors)
+    req_headers = {k: v for k, v in request.headers.items() if k.lower() not in ("authorization", "cookie")}
+
+    # Log to Better Stack (non-blocking best-effort) - only for POST or errors
+    if request.method.upper() == "POST" or status_code >= 400:
+        try:
+            log_to_better_stack(
+                message="HTTP POST request" if request.method.upper() == "POST" else "HTTP error",
+                level="info",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "query": dict(request.query_params),
+                    "status": status_code,
+                    "duration_ms": duration_ms,
+                    "request_headers": req_headers,
+                    "request_body": request_body_text if request.method.upper() == "POST" else None,
+                    "response_body": response_text,
+                },
+            )
+        except Exception:
+            pass
+
+    return new_response
 
 @app.post("/login", response_model=Token)
 async def login(user_credentials: UserLogin):
@@ -783,10 +888,32 @@ async def get_experiment_data(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        app, 
-        host="0.0.0.0", 
-        port=8000,
-        timeout_keep_alive=65,  # Manter conexão viva por 65s
-        timeout_graceful_shutdown=30  # Tempo para shutdown gracioso
-    )
+    import multiprocessing
+    
+    # Usar variável de ambiente ou detectar automaticamente
+    workers = int(os.getenv('WORKERS', min(multiprocessing.cpu_count(), 4)))
+    
+    print(f"🚀 Iniciando servidor com {workers} workers")
+    
+    # Quando usar workers > 1, precisa passar como string de importação
+    if workers > 1:
+        uvicorn.run(
+            "main:app",  # String de importação quando usar múltiplos workers
+            host="0.0.0.0", 
+            port=8000,
+            workers=workers,
+            timeout_keep_alive=65,
+            timeout_graceful_shutdown=30,
+            access_log=True,
+            log_level="info"
+        )
+    else:
+        uvicorn.run(
+            app,  # Objeto direto quando usar apenas 1 worker
+            host="0.0.0.0", 
+            port=8000,
+            timeout_keep_alive=65,
+            timeout_graceful_shutdown=30,
+            access_log=True,
+            log_level="info"
+        )

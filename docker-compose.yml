@@ -10,9 +10,18 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
       - HOST=0.0.0.0
       - PORT=8000
+      - WORKERS=4  # Número de workers para concorrência
     volumes:
       - ./credentials:/app/credentials:ro
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'  # Limitar uso de CPU
+          memory: 2G   # Limitar uso de memória
+        reservations:
+          cpus: '1.0'
+          memory: 1G
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/"]
       interval: 30s
