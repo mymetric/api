@@ -262,6 +262,8 @@ class AdsCampaignsResultsRow(BaseModel):
     leads: int
     transactions: int
     revenue: float
+    pixel_transactions: int = 0
+    pixel_revenue: float = 0.0
     transactions_first: int
     revenue_first: float
     transactions_origin_stack: int
@@ -2405,6 +2407,8 @@ async def get_ads_campaigns_results(
             sum(leads) Leads,
             sum(transactions) transactions,
             sum(revenue) revenue,
+            sum(pixel_transactions) pixel_transactions,
+            sum(pixel_revenue) pixel_revenue,
             sum(first_transaction) transactions_first,
             sum(first_revenue) revenue_first,
             sum(fsm_transactions) transactions_origin_stack,
@@ -2447,6 +2451,8 @@ async def get_ads_campaigns_results(
         total_clicks = 0
         total_leads = 0
         total_transactions = 0
+        total_pixel_transactions = 0
+        total_pixel_revenue = 0.0
         # Totais para métricas de assinatura
         total_first_montly_subscriptions = 0
         total_first_annual_subscriptions = 0
@@ -2476,6 +2482,8 @@ async def get_ads_campaigns_results(
                 leads=int(row.Leads) if row.Leads else 0,
                 transactions=int(row.transactions) if row.transactions else 0,
                 revenue=float(row.revenue) if row.revenue else 0.0,
+                pixel_transactions=int(row.pixel_transactions) if hasattr(row, 'pixel_transactions') and row.pixel_transactions else 0,
+                pixel_revenue=float(row.pixel_revenue) if hasattr(row, 'pixel_revenue') and row.pixel_revenue else 0.0,
                 transactions_first=int(row.transactions_first) if row.transactions_first else 0,
                 revenue_first=float(row.revenue_first) if row.revenue_first else 0.0,
                 transactions_origin_stack=int(row.transactions_origin_stack) if row.transactions_origin_stack else 0,
@@ -2509,6 +2517,8 @@ async def get_ads_campaigns_results(
             total_clicks += data_row.clicks
             total_leads += data_row.leads
             total_transactions += data_row.transactions
+            total_pixel_transactions += data_row.pixel_transactions
+            total_pixel_revenue += data_row.pixel_revenue
             # Calcular totais de assinatura
             total_first_montly_subscriptions += data_row.first_montly_subscriptions
             total_first_annual_subscriptions += data_row.first_annual_subscriptions
@@ -2552,6 +2562,8 @@ async def get_ads_campaigns_results(
             "total_clicks": total_clicks,
             "total_leads": total_leads,
             "total_transactions": total_transactions,
+            "total_pixel_transactions": total_pixel_transactions,
+            "total_pixel_revenue": total_pixel_revenue,
             "ctr": ctr,  # Click Through Rate
             "cpm": cpm,  # Cost Per Mille (1000 impressions)
             "cpc": cpc,  # Cost Per Click
