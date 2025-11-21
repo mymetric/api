@@ -12,7 +12,7 @@ import os
 import math
 
 from utils import verify_token, TokenData, get_bigquery_client, execute_bigquery_query_async
-from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, product_trend_cache, ads_campaigns_results_cache, realtime_cache, leads_orders_cache, shipping_calc_cache, last_request_manager
+from cache_manager import basic_data_cache, daily_metrics_cache, orders_cache, detailed_data_cache, product_trend_cache, ads_campaigns_results_cache, ads_campaigns_trend_cache, realtime_cache, leads_orders_cache, shipping_calc_cache, last_request_manager
 
 # Router para métricas
 metrics_router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -325,6 +325,39 @@ class AdsCreativesResultsRow(BaseModel):
 
 class AdsCreativesResultsResponse(BaseModel):
     data: List[AdsCreativesResultsRow]
+    total_rows: int
+    summary: Dict[str, Any]
+    cache_info: Optional[Dict[str, Any]] = None
+
+# Novos modelos para ads campaigns trend
+class AdsCampaignsTrendRequest(BaseModel):
+    table_name: Optional[str] = None
+    last_cache: Optional[bool] = False
+    force_refresh: Optional[bool] = False
+
+class AdsCampaignsTrendRow(BaseModel):
+    campaign_name: str
+    platform: str
+    cost_w1: float
+    cost_w2: float
+    cost_w3: float
+    cost_w4: float
+    revenue_w1: float
+    revenue_w2: float
+    revenue_w3: float
+    revenue_w4: float
+    roas_w1: float
+    roas_w2: float
+    roas_w3: float
+    roas_w4: float
+    roas_growth_w2_vs_w1_pct: float
+    roas_growth_w3_vs_w2_pct: float
+    roas_growth_w4_vs_w3_pct: float
+    roas_trend: str
+    avg_daily_cost_w4: float
+
+class AdsCampaignsTrendResponse(BaseModel):
+    data: List[AdsCampaignsTrendRow]
     total_rows: int
     summary: Dict[str, Any]
     cache_info: Optional[Dict[str, Any]] = None
@@ -2883,6 +2916,228 @@ async def get_ads_creatives_results(
             detail=f"Erro interno do servidor: {str(e)}"
         )
 
+@metrics_router.post("/ads-campaigns-trend", response_model=AdsCampaignsTrendResponse)
+async def get_ads_campaigns_trend(
+    request: AdsCampaignsTrendRequest,
+    token: TokenData = Depends(verify_token)
+):
+    """Endpoint para buscar dados de tendência de campanhas publicitárias"""
+    
+    # Se last_cache for True, buscar o último request salvo específico por table_name
+    if request.last_cache:
+        if not request.table_name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="table_name é obrigatório quando last_cache é true"
+            )
+        
+        last_request = last_request_manager.get_last_request('ads-campaigns-trend', request.table_name)
+        if last_request:
+            # Executar o último request salvo
+            return await execute_last_request('ads-campaigns-trend', last_request['request_data'], token)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Nenhum último request encontrado para a tabela '{request.table_name}'"
+            )
+    
+    # Parâmetros para o cache
+    cache_params = {
+        'email': token.email,
+        'table_name': request.table_name
+    }
+    
+    # Tentar buscar do cache primeiro (apenas se force_refresh for False)
+    if not request.force_refresh:
+        cached_data = ads_campaigns_trend_cache.get(**cache_params)
+        if cached_data:
+            print(f"Cache hit para ads-campaigns-trend: {cache_params}")
+            return AdsCampaignsTrendResponse(
+                data=cached_data['data'],
+                total_rows=cached_data['total_rows'],
+                summary=cached_data['summary'],
+                cache_info={
+                    'source': 'cache',
+                    'cached_at': cached_data.get('cached_at'),
+                    'ttl_hours': 168  # 7 dias
+                }
+            )
+    
+    # Se não estiver no cache, buscar do BigQuery
+    client = get_bigquery_client()
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro de conexão com o banco de dados"
+        )
+    
+    try:
+        # Buscar informações do usuário
+        user_query = f"""
+        SELECT tablename, access_control
+        FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", token.email),
+            ]
+        )
+        
+        user_result = client.query(user_query, job_config=job_config)
+        user_data = list(user_result.result())
+        
+        if not user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário não encontrado"
+            )
+        
+        user_tablename = user_data[0].tablename
+        access_control = user_data[0].access_control
+        
+        # Determinar qual tabela usar
+        if user_tablename == 'all':
+            # Usuário tem acesso a todas as tabelas
+            if request.table_name:
+                # Usuário escolheu uma tabela específica
+                tablename = request.table_name
+                print(f"🔓 Usuário com acesso total escolheu tabela: {tablename}")
+            else:
+                # Usar tabela padrão (constance)
+                tablename = 'constance'
+                print(f"🔓 Usuário com acesso total usando tabela padrão: {tablename}")
+        else:
+            # Usuário tem acesso limitado a uma tabela específica
+            if request.table_name and request.table_name != user_tablename:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
+                )
+            tablename = user_tablename
+            print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
+
+        # Determinar projeto
+        project_name = get_project_name(tablename)
+        
+        # Query para buscar dados de tendência de campanhas
+        query = f"""
+        SELECT
+            campaign_name,
+            platform,
+            cost_w1,
+            cost_w2,
+            cost_w3,
+            cost_w4,
+            revenue_w1,
+            revenue_w2,
+            revenue_w3,
+            revenue_w4,
+            roas_w1,
+            roas_w2,
+            roas_w3,
+            roas_w4,
+            roas_growth_w2_vs_w1_pct,
+            roas_growth_w3_vs_w2_pct,
+            roas_growth_w4_vs_w3_pct,
+            roas_trend,
+            avg_daily_cost_w4
+        FROM `{project_name}.dbt_aggregated.{tablename}_ads_campaigns_trend`
+        ORDER BY cost_w4 DESC
+        """
+        
+        print(f"Executando query ads-campaigns-trend: {query}")
+        
+        # Executar query de forma assíncrona
+        rows = await execute_bigquery_query_async(query)
+        
+        # Converter para formato de resposta
+        data = []
+        total_cost_w4 = 0
+        total_revenue_w4 = 0
+        total_campaigns = 0
+        
+        for row in rows:
+            data_row = AdsCampaignsTrendRow(
+                campaign_name=str(row.campaign_name) if row.campaign_name else "",
+                platform=str(row.platform) if row.platform else "",
+                cost_w1=float(row.cost_w1) if row.cost_w1 is not None else 0.0,
+                cost_w2=float(row.cost_w2) if row.cost_w2 is not None else 0.0,
+                cost_w3=float(row.cost_w3) if row.cost_w3 is not None else 0.0,
+                cost_w4=float(row.cost_w4) if row.cost_w4 is not None else 0.0,
+                revenue_w1=float(row.revenue_w1) if row.revenue_w1 is not None else 0.0,
+                revenue_w2=float(row.revenue_w2) if row.revenue_w2 is not None else 0.0,
+                revenue_w3=float(row.revenue_w3) if row.revenue_w3 is not None else 0.0,
+                revenue_w4=float(row.revenue_w4) if row.revenue_w4 is not None else 0.0,
+                roas_w1=float(row.roas_w1) if row.roas_w1 is not None else 0.0,
+                roas_w2=float(row.roas_w2) if row.roas_w2 is not None else 0.0,
+                roas_w3=float(row.roas_w3) if row.roas_w3 is not None else 0.0,
+                roas_w4=float(row.roas_w4) if row.roas_w4 is not None else 0.0,
+                roas_growth_w2_vs_w1_pct=float(row.roas_growth_w2_vs_w1_pct) if row.roas_growth_w2_vs_w1_pct is not None else 0.0,
+                roas_growth_w3_vs_w2_pct=float(row.roas_growth_w3_vs_w2_pct) if row.roas_growth_w3_vs_w2_pct is not None else 0.0,
+                roas_growth_w4_vs_w3_pct=float(row.roas_growth_w4_vs_w3_pct) if row.roas_growth_w4_vs_w3_pct is not None else 0.0,
+                roas_trend=str(row.roas_trend) if row.roas_trend else "",
+                avg_daily_cost_w4=float(row.avg_daily_cost_w4) if row.avg_daily_cost_w4 is not None else 0.0
+            )
+            data.append(data_row)
+            
+            # Acumular totais
+            total_cost_w4 += data_row.cost_w4
+            total_revenue_w4 += data_row.revenue_w4
+            total_campaigns += 1
+        
+        # Calcular métricas de resumo
+        avg_roas_w4 = (total_revenue_w4 / total_cost_w4) if total_cost_w4 > 0 else 0
+        
+        summary = {
+            "total_campaigns": total_campaigns,
+            "total_cost_w4": round(total_cost_w4, 2),
+            "total_revenue_w4": round(total_revenue_w4, 2),
+            "avg_roas_w4": round(avg_roas_w4, 2),
+            "table_name": tablename,
+            "project_name": project_name,
+            "user_access": "all" if user_tablename == 'all' else "limited"
+        }
+        
+        # Preparar resposta
+        response_data = {
+            'data': [row.dict() for row in data],
+            'total_rows': len(data),
+            'summary': summary,
+            'cached_at': datetime.now().isoformat()
+        }
+        
+        # Salvar último request
+        last_request_manager.save_last_request(
+            'ads-campaigns-trend',
+            {
+                'table_name': request.table_name
+            },
+            token.email
+        )
+        
+        # Armazenar no cache
+        ads_campaigns_trend_cache.set(response_data, **cache_params)
+        
+        return AdsCampaignsTrendResponse(
+            data=data,
+            total_rows=len(data),
+            summary=summary,
+            cache_info={
+                'source': 'database',
+                'cached_at': response_data['cached_at'],
+                'ttl_hours': 168  # 7 dias
+            }
+        )
+        
+    except Exception as e:
+        print(f"Erro ao buscar dados de tendência de campanhas publicitárias: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno do servidor: {str(e)}"
+        )
+
 @metrics_router.post("/realtime", response_model=RealtimeResponse)
 async def get_realtime_purchases(
     request: RealtimeRequest,
@@ -3301,6 +3556,18 @@ async def execute_last_request(endpoint: str, request_data: Dict[str, Any], toke
         # Garantir que last_cache seja False para evitar loop infinito
         temp_request.last_cache = False
         return await get_ads_creatives_results(temp_request, token)
+    
+    elif endpoint == "ads-campaigns-trend":
+        from pydantic import BaseModel
+        class TempRequest(BaseModel):
+            table_name: Optional[str] = None
+            last_cache: Optional[bool] = False
+            force_refresh: Optional[bool] = False
+        
+        temp_request = TempRequest(**request_data)
+        # Garantir que last_cache seja False para evitar loop infinito
+        temp_request.last_cache = False
+        return await get_ads_campaigns_trend(temp_request, token)
     
     elif endpoint == "leads_orders":
         from pydantic import BaseModel
