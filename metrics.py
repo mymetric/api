@@ -596,12 +596,13 @@ async def shipping_calc_analytics(
         if user_tablename == 'all':
             effective_tablename = table_name or 'constance'
         else:
-            if table_name and table_name != user_tablename:
+            user_tablenames = user_tablename.split(',')
+            if table_name and table_name not in user_tablenames:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{table_name}'"
                 )
-            effective_tablename = user_tablename
+            effective_tablename = table_name if table_name else user_tablenames[0]
 
         project_name = get_project_name(effective_tablename)
 
@@ -689,12 +690,13 @@ async def shipping_calc_analytics_post(
         if user_tablename == 'all':
             effective_tablename = request.table_name or 'constance'
         else:
-            if request.table_name and request.table_name != user_tablename:
+            user_tablenames = user_tablename.split(',')
+            if request.table_name and request.table_name not in user_tablenames:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
                 )
-            effective_tablename = user_tablename
+            effective_tablename = request.table_name if request.table_name else user_tablenames[0]
 
         project_name = get_project_name(effective_tablename)
 
@@ -819,12 +821,13 @@ async def get_basic_data(
                 print(f"🔓 Usuário com acesso total usando tabela padrão: {tablename}")
         else:
             # Usuário tem acesso limitado a uma tabela específica
-            if request.table_name and request.table_name != user_tablename:
+            user_tablenames = user_tablename.split(',')
+            if request.table_name and request.table_name not in user_tablenames:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
                 )
-            tablename = user_tablename
+            tablename = request.table_name if request.table_name else user_tablenames[0]
             print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
 
         # Processar modelo de atribuição
@@ -1144,12 +1147,13 @@ async def get_daily_metrics(
                 print(f"🔓 Usuário com acesso total usando tabela padrão: {tablename}")
         else:
             # Usuário tem acesso limitado a uma tabela específica
-            if request.table_name and request.table_name != user_tablename:
+            user_tablenames = user_tablename.split(',')
+            if request.table_name and request.table_name not in user_tablenames:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
                 )
-            tablename = user_tablename
+            tablename = request.table_name if request.table_name else user_tablenames[0]
             print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
 
         # Determinar projeto
@@ -1358,12 +1362,13 @@ async def get_orders(
                 print(f"🔓 Usuário com acesso total usando tabela padrão: {tablename}")
         else:
             # Usuário tem acesso limitado a uma tabela específica
-            if request.table_name and request.table_name != user_tablename:
+            user_tablenames = user_tablename.split(',')
+            if request.table_name and request.table_name not in user_tablenames:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
                 )
-            tablename = user_tablename
+            tablename = request.table_name if request.table_name else user_tablenames[0]
             print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
         
         # Determinar projeto
@@ -1619,8 +1624,8 @@ async def get_user_goals(
             tablename = request.table_name
             print(f"🔓 Usuário com acesso total acessando metas da tabela: {tablename}")
         else:
-            # Usuário com acesso limitado só pode acessar sua própria tabela
-            if request.table_name != user_tablename:
+            # Usuário com acesso limitado só pode acessar tabelas da sua lista
+            if request.table_name not in user_tablename.split(','):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar metas da tabela '{request.table_name}'"
@@ -1803,12 +1808,13 @@ async def get_detailed_data(
             else:
                 tablename = 'constance'
         else:
-            if request.table_name and request.table_name != user_tablename:
+            user_tablenames = user_tablename.split(',')
+            if request.table_name and request.table_name not in user_tablenames:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
                 )
-            tablename = user_tablename
+            tablename = request.table_name if request.table_name else user_tablenames[0]
         
         # Determinar projeto
         project_name = get_project_name(tablename)
@@ -2112,7 +2118,7 @@ async def get_product_trend(
             print(f"🔓 Usuário com acesso total acessando tabela: {tablename}")
         else:
             # Usuário tem acesso limitado a uma tabela específica
-            if request.table_name != user_tablename:
+            if request.table_name not in user_tablename.split(','):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
@@ -2414,12 +2420,13 @@ async def get_ads_campaigns_results(
                 print(f"🔓 Usuário com acesso total usando tabela padrão: {tablename}")
         else:
             # Usuário tem acesso limitado a uma tabela específica
-            if request.table_name and request.table_name != user_tablename:
+            user_tablenames = user_tablename.split(',')
+            if request.table_name and request.table_name not in user_tablenames:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
                 )
-            tablename = user_tablename
+            tablename = request.table_name if request.table_name else user_tablenames[0]
             print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
 
         # Determinar projeto
@@ -2764,12 +2771,13 @@ async def get_ads_creatives_results(
                 print(f"🔓 Usuário com acesso total usando tabela padrão: {tablename}")
         else:
             # Usuário tem acesso limitado a uma tabela específica
-            if request.table_name and request.table_name != user_tablename:
+            user_tablenames = user_tablename.split(',')
+            if request.table_name and request.table_name not in user_tablenames:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
                 )
-            tablename = user_tablename
+            tablename = request.table_name if request.table_name else user_tablenames[0]
             print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
 
         # Determinar projeto
@@ -3010,12 +3018,13 @@ async def get_ads_campaigns_trend(
                 print(f"🔓 Usuário com acesso total usando tabela padrão: {tablename}")
         else:
             # Usuário tem acesso limitado a uma tabela específica
-            if request.table_name and request.table_name != user_tablename:
+            user_tablenames = user_tablename.split(',')
+            if request.table_name and request.table_name not in user_tablenames:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
                 )
-            tablename = user_tablename
+            tablename = request.table_name if request.table_name else user_tablenames[0]
             print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
 
         # Determinar projeto
@@ -3216,12 +3225,13 @@ async def get_realtime_purchases(
                 print(f"🔓 Usuário com acesso total usando tabela padrão: {tablename}")
         else:
             # Usuário tem acesso limitado a uma tabela específica
-            if request.table_name and request.table_name != user_tablename:
+            user_tablenames = user_tablename.split(',')
+            if request.table_name and request.table_name not in user_tablenames:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
                 )
-            tablename = user_tablename
+            tablename = request.table_name if request.table_name else user_tablenames[0]
             print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
 
         # Determinar projeto
@@ -3409,12 +3419,13 @@ async def get_realtime_revenue(
             print(f"🔓 Usuário com acesso total escolheu tabela: {tablename}")
         else:
             # Usuário tem acesso limitado a uma tabela específica
-            if request.table_name and request.table_name != user_tablename:
+            user_tablenames = user_tablename.split(',')
+            if request.table_name and request.table_name not in user_tablenames:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
                 )
-            tablename = user_tablename
+            tablename = request.table_name if request.table_name else user_tablenames[0]
             print(f"🔒 Usuário com acesso limitado usando tabela: {tablename}")
         
         # Determinar projeto
@@ -3993,7 +4004,16 @@ async def get_leads_orders(
         elif user_tablename == 'all':
             tablename = request.table_name
         else:
-            tablename = user_tablename
+            user_tablenames = user_tablename.split(',')
+            if request.table_name:
+                if request.table_name not in user_tablenames:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=f"Usuário só tem acesso à tabela '{user_tablename}', não pode acessar '{request.table_name}'"
+                    )
+                tablename = request.table_name
+            else:
+                tablename = user_tablenames[0]
         
         # Determinar projeto
         project_name = get_project_name(tablename)
