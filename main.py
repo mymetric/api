@@ -731,49 +731,51 @@ async def forgot_password(request: dict):
         
         # Gerar nova senha segura
         new_password = generate_secure_password()
-        
+
         # Fazer hash da nova senha
         hashed_new_password = hash_password(new_password)
-        
-        # Atualizar senha no banco de dados
+
+        # Extrair nome do email (parte antes do @)
+        user_name = email.split('@')[0].title()
+
+        # Enviar o email ANTES de tocar no banco: se o envio falhar, a senha
+        # antiga do usuário continua válida em vez de ser trocada silenciosamente
+        # sem ele nunca receber a nova (bug reportado 10/08 e 20/08).
+        email_sent = email_service.send_password_recovery_email(
+            to_email=email,
+            to_name=user_name,
+            new_password=new_password
+        )
+
+        if not email_sent:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Erro ao enviar email de recuperação"
+            )
+
+        # Só atualiza a senha no banco depois de confirmar o envio do email
         update_query = """
         UPDATE `mymetric-hub-shopify.dbt_config.users`
         SET password = @new_password
         WHERE email = @email
         """
-        
+
         update_job_config = bigquery.QueryJobConfig(
             query_parameters=[
                 bigquery.ScalarQueryParameter("new_password", "STRING", hashed_new_password),
                 bigquery.ScalarQueryParameter("email", "STRING", email),
             ]
         )
-        
+
         update_job = client.query(update_query, update_job_config)
         update_job.result()  # Aguardar conclusão
-        
-        # Extrair nome do email (parte antes do @)
-        user_name = email.split('@')[0].title()
-        
-        # Enviar email de recuperação
-        email_sent = email_service.send_password_recovery_email(
-            to_email=email,
-            to_name=user_name,
-            new_password=new_password
-        )
-        
-        if email_sent:
-            return {
-                "message": "Email de recuperação enviado com sucesso",
-                "email": email,
-                "email_sent": True,
-                "note": "Verifique sua caixa de entrada e spam. A nova senha foi gerada e enviada."
-            }
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Erro ao enviar email de recuperação"
-            )
+
+        return {
+            "message": "Email de recuperação enviado com sucesso",
+            "email": email,
+            "email_sent": True,
+            "note": "Verifique sua caixa de entrada e spam. A nova senha foi gerada e enviada."
+        }
             
     except HTTPException:
         raise
