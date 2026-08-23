@@ -256,6 +256,9 @@ class AdsCampaignsResultsRow(BaseModel):
     platform: str
     campaign_name: str
     date: str
+    # Conta de anúncios de origem (Meta Ads: ad_account_id). Vem nula para
+    # Google Ads e TikTok Ads por enquanto (não migrados na fonte dbt ainda).
+    account_id: Optional[str] = None
     cost: float
     impressions: int
     clicks: int
@@ -2440,6 +2443,7 @@ async def get_ads_campaigns_results(
         SELECT
             platform,
             campaign_name,
+            account_id,
             date,
             sum(cost) cost,
             sum(impressions) impressions,
@@ -2515,6 +2519,7 @@ async def get_ads_campaigns_results(
             data_row = AdsCampaignsResultsRow(
                 platform=str(row.platform) if row.platform else "",
                 campaign_name=str(row.campaign_name) if row.campaign_name else "",
+                account_id=str(row.account_id) if getattr(row, 'account_id', None) else None,
                 date=str(row.date) if row.date else "",
                 cost=float(row.cost) if row.cost else 0.0,
                 impressions=int(row.impressions) if row.impressions else 0,
