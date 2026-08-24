@@ -1,34 +1,70 @@
 """
-Serviço de email usando MailerSend API
+Serviço de email usando AWS SES (SMTP). Remetente em mymetric.app.
+Migrado do MailerSend (conta bloqueada) em 24/08/2026.
 """
 
 import json
 import os
-import requests
+import ssl
+import smtplib
+from email.message import EmailMessage
 from typing import Optional, Dict, Any
 
 class EmailService:
     def __init__(self):
         self.config = self._load_config()
-        self.api_key = self.config.get("api_key")
         self.from_email = self.config.get("from_email", "accounts@mymetric.app")
         self.from_name = self.config.get("from_name", "MyMetric Team")
-        self.base_url = "https://api.mailersend.com/v1"
-    
+        # AWS SES SMTP (us-east-1). Credenciais IAM SMTP; qualquer identidade
+        # verificada na conta pode ser o remetente (mymetric.app está verificado).
+        self.smtp_host = self.config.get("smtp_host") or os.getenv("SES_SMTP_HOST", "email-smtp.us-east-1.amazonaws.com")
+        self.smtp_port = int(self.config.get("smtp_port") or os.getenv("SES_SMTP_PORT", "587"))
+        self.smtp_user = self.config.get("smtp_user") or os.getenv("SES_SMTP_USER")
+        self.smtp_pass = self.config.get("smtp_pass") or os.getenv("SES_SMTP_PASS")
+        # mantido só pros guards existentes (True = e-mail configurado)
+        self.api_key = self.smtp_user
+
     def _load_config(self) -> Dict[str, Any]:
-        """Carrega configuração do MailerSend"""
+        """Carrega config de e-mail (SES). Fallback: mailersend_config só p/ from_email/name."""
+        for path in ("credentials/ses_config.json", "credentials/mailersend_config.json"):
+            try:
+                if os.path.exists(path):
+                    with open(path, 'r') as f:
+                        return json.load(f)
+            except Exception as e:
+                print(f"❌ Erro ao carregar {path}: {e}")
+        print("⚠️ Config de e-mail não encontrada (usando env/defaults do SES)")
+        return {}
+
+    def _deliver(self, email_data: Dict[str, Any]) -> bool:
+        """Envia via AWS SES (SMTP). HTML SEMPRE em base64 (o SES corrompe
+        quoted-printable ao reescrever links/pixel). Ver reference_mymetric_email_platform."""
+        if not self.smtp_user or not self.smtp_pass:
+            print("❌ Credenciais SES (SES_SMTP_USER/PASS) não configuradas")
+            return False
+        frm = email_data.get("from", {})
+        dest = email_data.get("to", [{}])[0]
+        to_email = dest.get("email")
         try:
-            config_path = "credentials/mailersend_config.json"
-            if os.path.exists(config_path):
-                with open(config_path, 'r') as f:
-                    return json.load(f)
-            else:
-                print("⚠️ Arquivo de configuração do MailerSend não encontrado")
-                return {}
+            msg = EmailMessage()
+            msg["From"] = f"{frm.get('name', self.from_name)} <{frm.get('email', self.from_email)}>"
+            msg["To"] = f"{dest.get('name')} <{to_email}>" if dest.get("name") else to_email
+            msg["Subject"] = email_data.get("subject", "")
+            msg.set_content(email_data.get("text", "") or " ")
+            html = email_data.get("html")
+            if html:
+                msg.add_alternative(html, subtype="html", cte="base64")
+            s = smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=30)
+            s.ehlo(); s.starttls(context=ssl.create_default_context()); s.ehlo()
+            s.login(self.smtp_user, self.smtp_pass)
+            s.send_message(msg)
+            s.quit()
+            print(f"✅ Email enviado (SES) para {to_email}")
+            return True
         except Exception as e:
-            print(f"❌ Erro ao carregar configuração do MailerSend: {e}")
-            return {}
-    
+            print(f"❌ Erro ao enviar email (SES) para {to_email}: {e}")
+            return False
+
     def send_user_creation_email(
         self, 
         to_email: str, 
@@ -132,28 +168,9 @@ class EmailService:
                 "html": html_content
             }
             
-            # Headers da requisição
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            # Enviar email
-            response = requests.post(
-                f"{self.base_url}/email",
-                headers=headers,
-                json=email_data,
-                timeout=30
-            )
-            
-            if response.status_code == 202:  # MailerSend retorna 202 para sucesso
-                print(f"✅ Email enviado com sucesso para {to_email}")
-                return True
-            else:
-                print(f"❌ Erro ao enviar email para {to_email}: {response.status_code}")
-                print(f"Resposta: {response.text}")
-                return False
-                
+            # Enviar via AWS SES (SMTP)
+            return self._deliver(email_data)
+
         except Exception as e:
             print(f"❌ Erro ao enviar email: {e}")
             return False
@@ -260,28 +277,9 @@ class EmailService:
                 "html": html_content
             }
             
-            # Headers da requisição
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            # Enviar email
-            response = requests.post(
-                f"{self.base_url}/email",
-                headers=headers,
-                json=email_data,
-                timeout=30
-            )
-            
-            if response.status_code == 202:  # MailerSend retorna 202 para sucesso
-                print(f"✅ Email de recuperação enviado com sucesso para {to_email}")
-                return True
-            else:
-                print(f"❌ Erro ao enviar email de recuperação para {to_email}: {response.status_code}")
-                print(f"Resposta: {response.text}")
-                return False
-                
+            # Enviar via AWS SES (SMTP)
+            return self._deliver(email_data)
+
         except Exception as e:
             print(f"❌ Erro ao enviar email de recuperação: {e}")
             return False
@@ -309,26 +307,8 @@ class EmailService:
                 "html": "<p>Este é um <b>email de teste</b> enviado via MailerSend API do MyMetric.</p>"
             }
             
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            response = requests.post(
-                f"{self.base_url}/email",
-                headers=headers,
-                json=email_data,
-                timeout=30
-            )
-            
-            if response.status_code == 202:
-                print(f"✅ Email de teste enviado com sucesso para {to_email}")
-                return True
-            else:
-                print(f"❌ Erro ao enviar email de teste: {response.status_code}")
-                print(f"Resposta: {response.text}")
-                return False
-                
+            return self._deliver(email_data)
+
         except Exception as e:
             print(f"❌ Erro ao enviar email de teste: {e}")
             return False
