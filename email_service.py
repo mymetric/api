@@ -18,7 +18,7 @@ class EmailService:
         # AWS SES SMTP (us-east-1). Credenciais IAM SMTP; qualquer identidade
         # verificada na conta pode ser o remetente (mymetric.app está verificado).
         self.smtp_host = self.config.get("smtp_host") or os.getenv("SES_SMTP_HOST", "email-smtp.us-east-1.amazonaws.com")
-        self.smtp_port = int(self.config.get("smtp_port") or os.getenv("SES_SMTP_PORT", "587"))
+        self.smtp_port = int(self.config.get("smtp_port") or os.getenv("SES_SMTP_PORT", "2587"))
         self.smtp_user = self.config.get("smtp_user") or os.getenv("SES_SMTP_USER")
         self.smtp_pass = self.config.get("smtp_pass") or os.getenv("SES_SMTP_PASS")
         # mantido só pros guards existentes (True = e-mail configurado)
