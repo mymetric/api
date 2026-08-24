@@ -528,27 +528,77 @@ async def create_user(
         # Gerar senha segura automaticamente
         generated_password = generate_secure_password()
         hashed_password = hash_password(generated_password)
-        
-        # Query para inserir/atualizar usuário usando MERGE
-        query = f"""
-        MERGE `mymetric-hub-shopify.dbt_config.users` AS target
-        USING (SELECT '{user_data.table_name}' as tablename, '{user_data.email}' as email, '{hashed_password}' as password) AS source
-        ON target.tablename = source.tablename AND target.email = source.email
-        WHEN MATCHED THEN
-            UPDATE SET 
-                email = source.email, 
-                password = source.password, 
-                admin = {str(user_data.admin).lower()},
-                access_control = '{user_data.access_control}'
-        WHEN NOT MATCHED THEN
-            INSERT (tablename, email, password, admin, access_control)
-            VALUES ('{user_data.table_name}', '{user_data.email}', '{hashed_password}', {str(user_data.admin).lower()}, '{user_data.access_control}')
+
+        # Verificar se o e-mail já existe (o tablename é uma lista CSV, ex.: "surya,gringa").
+        # Se já existe, CONCATENA o(s) novo(s) cliente(s) no CSV em vez de tentar um MERGE
+        # chaveado em (tablename, email) — que não dá match quando o tablename é diferente
+        # e acaba criando uma linha duplicada em vez de consolidar o acesso.
+        check_query = """
+        SELECT email, tablename FROM `mymetric-hub-shopify.dbt_config.users`
+        WHERE email = @email
+        LIMIT 1
         """
-        
-        # Executar query
-        query_job = client.query(query)
-        query_job.result()  # Aguardar conclusão
-        
+        check_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("email", "STRING", user_data.email),
+            ]
+        )
+        existing = list(client.query(check_query, job_config=check_config).result())
+
+        if existing:
+            current_tn = (existing[0].tablename or "").strip()
+            if current_tn == "all":
+                return {
+                    "message": f"Usuário {user_data.email} já tem acesso a todos os clientes (all).",
+                    "user": {"email": user_data.email, "table_name": current_tn},
+                }
+            current_set = [t.strip() for t in current_tn.split(",") if t.strip()]
+            add_set = [t.strip() for t in user_data.table_name.split(",") if t.strip()]
+            merged = current_set + [t for t in add_set if t not in current_set]
+            new_tn = ",".join(merged)
+
+            update_query = """
+            UPDATE `mymetric-hub-shopify.dbt_config.users`
+            SET tablename = @tablename,
+                admin = @admin,
+                access_control = @access_control
+            WHERE email = @email
+            """
+            update_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("tablename", "STRING", new_tn),
+                    bigquery.ScalarQueryParameter("admin", "BOOL", user_data.admin),
+                    bigquery.ScalarQueryParameter("access_control", "STRING", user_data.access_control),
+                    bigquery.ScalarQueryParameter("email", "STRING", user_data.email),
+                ]
+            )
+            client.query(update_query, job_config=update_config).result()
+
+            return {
+                "message": f"Cliente(s) adicionado(s) ao usuário {user_data.email}. Agora: {new_tn}",
+                "user": {
+                    "email": user_data.email,
+                    "table_name": new_tn,
+                    "admin": user_data.admin,
+                    "access_control": user_data.access_control,
+                },
+            }
+
+        insert_query = """
+        INSERT INTO `mymetric-hub-shopify.dbt_config.users` (tablename, email, password, admin, access_control)
+        VALUES (@tablename, @email, @password, @admin, @access_control)
+        """
+        insert_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("tablename", "STRING", user_data.table_name),
+                bigquery.ScalarQueryParameter("email", "STRING", user_data.email),
+                bigquery.ScalarQueryParameter("password", "STRING", hashed_password),
+                bigquery.ScalarQueryParameter("admin", "BOOL", user_data.admin),
+                bigquery.ScalarQueryParameter("access_control", "STRING", user_data.access_control),
+            ]
+        )
+        client.query(insert_query, job_config=insert_config).result()
+
         # Enviar email com as credenciais
         email_sent = False
         try:
