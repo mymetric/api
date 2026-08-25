@@ -285,7 +285,23 @@ async def login(user_credentials: UserLogin):
             zapi_service.send_login_notification(user.email)
         except Exception as e:
             print(f"Erro ao enviar notificação de login: {e}")
-        
+
+        # Registrar timestamp do último login (best-effort, não bloqueia o login)
+        try:
+            update_query = """
+            UPDATE `mymetric-hub-shopify.dbt_config.users`
+            SET last_login = CURRENT_TIMESTAMP()
+            WHERE email = @email
+            """
+            update_job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("email", "STRING", user.email),
+                ]
+            )
+            client.query(update_query, job_config=update_job_config).result()
+        except Exception as e:
+            print(f"Erro ao registrar last_login: {e}")
+
         return {
             "access_token": access_token,
             "refresh_token": refresh_token,
@@ -408,37 +424,38 @@ async def list_users(
         # Construir query com filtro opcional
         if table_name:
             query = """
-            SELECT email, admin, access_control, tablename as table_name
+            SELECT email, admin, access_control, tablename as table_name, last_login
             FROM `mymetric-hub-shopify.dbt_config.users`
             WHERE tablename = @table_name
             ORDER BY email
             """
-            
+
             job_config = bigquery.QueryJobConfig(
                 query_parameters=[
                     bigquery.ScalarQueryParameter("table_name", "STRING", table_name),
                 ]
             )
-            
+
             query_job = client.query(query, job_config=job_config)
         else:
             query = """
-            SELECT email, admin, access_control, tablename as table_name
+            SELECT email, admin, access_control, tablename as table_name, last_login
             FROM `mymetric-hub-shopify.dbt_config.users`
             ORDER BY email
             """
-            
+
             query_job = client.query(query)
-        
+
         results = list(query_job.result())
-        
+
         users = []
         for row in results:
             users.append({
                 "email": row.email,
                 "admin": row.admin,
                 "access_control": row.access_control,
-                "table_name": row.table_name
+                "table_name": row.table_name,
+                "last_login": row.last_login.isoformat() if row.last_login else None
             })
         
         return {
